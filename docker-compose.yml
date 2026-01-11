@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doc-generator
+    ports:
+      - "8083:80"
+    volumes:
+      - ./:/var/www/html
+      - ./output:/var/www/html/output
+    environment:
+      - PHP_DISPLAY_ERRORS=1
+      - PHP_ERROR_REPORTING=E_ALL
+    restart: unless-stopped
+    networks:
+      - doc-network
+
+networks:
+  doc-network:
+    driver: bridge
