@@ -1,0 +1,14 @@
+{
+    "name": "doc-generator/web-to-docx",
+    "description": "Core PHP web application that converts website page content into DOCX files",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "phpoffice/phpword": "^1.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    }
+}
