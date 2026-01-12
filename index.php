@@ -177,6 +177,72 @@ session_start();
             font-style: italic;
         }
 
+        .bulk-actions {
+            padding: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .bulk-action-btn {
+            padding: 8px 16px;
+            font-size: 12px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: opacity 0.2s;
+            flex: 1;
+            min-width: 100px;
+        }
+
+        .bulk-action-btn:hover {
+            opacity: 0.9;
+        }
+
+        .bulk-action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-bulk-download {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-bulk-delete {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-select-all {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .file-checkbox {
+            margin-right: 8px;
+            cursor: pointer;
+            width: 16px;
+            height: 16px;
+        }
+
+        .directory-item.file {
+            padding-left: 10px;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            flex: 1;
+        }
+
         .content-area {
             background: white;
             border-radius: 12px;
@@ -555,8 +621,9 @@ session_start();
 
                         if (is_dir($fullPath)) {
                             $hasContent = true;
-                            echo '<div class="directory-item folder" onclick="toggleFolder(this)">';
-                            echo htmlspecialchars($item);
+                            echo '<div class="directory-item folder">';
+                            echo '<input type="checkbox" class="folder-checkbox" onclick="event.stopPropagation(); toggleFolderFiles(this);" style="margin-right: 8px;">';
+                            echo '<span onclick="toggleFolder(this.parentElement)">' . htmlspecialchars($item) . '</span>';
                             echo '</div>';
                             echo '<div class="folder-content" style="padding-left: 20px;">';
                             scanDirectory($fullPath, $baseDir);
@@ -564,7 +631,10 @@ session_start();
                         } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'docx') {
                             $hasContent = true;
                             echo '<div class="directory-item file">';
+                            echo '<div class="file-info">';
+                            echo '<input type="checkbox" class="file-checkbox" data-file="' . htmlspecialchars('output/' . $relativePath) . '">';
                             echo '<span class="filename">' . htmlspecialchars($item) . '</span>';
+                            echo '</div>';
                             echo '<div class="file-actions">';
                             echo '<a href="download.php?file=' . urlencode('output/' . $relativePath) . '" class="file-action-btn btn-download">Download</a>';
                             echo '<a href="remove.php?file=' . urlencode('output/' . $relativePath) . '" onclick="return confirm(\'Delete this file?\')" class="file-action-btn btn-remove">Remove</a>';
@@ -573,7 +643,9 @@ session_start();
                         } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'log') {
                             $hasContent = true;
                             echo '<div class="directory-item file log">';
+                            echo '<div class="file-info">';
                             echo '<span class="filename">' . htmlspecialchars($item) . '</span>';
+                            echo '</div>';
                             echo '<div class="file-actions">';
                             echo '<a href="output/' . htmlspecialchars($relativePath) . '" target="_blank" class="file-action-btn btn-view">View</a>';
                             echo '<a href="remove.php?file=' . urlencode('output/' . $relativePath) . '" onclick="return confirm(\'Delete this log file?\')" class="file-action-btn btn-remove">Remove</a>';
@@ -590,6 +662,11 @@ session_start();
                 $outputDir = __DIR__ . '/output';
                 scanDirectory($outputDir, $outputDir);
                 ?>
+            </div>
+            <div class="bulk-actions">
+                <button type="button" class="bulk-action-btn btn-select-all" onclick="toggleSelectAll()">Select All</button>
+                <button type="button" class="bulk-action-btn btn-bulk-download" onclick="bulkDownload()" disabled id="bulkDownloadBtn">Download Selected</button>
+                <button type="button" class="bulk-action-btn btn-bulk-delete" onclick="bulkDelete()" disabled id="bulkDeleteBtn">Delete Selected</button>
             </div>
         </div>
 
@@ -688,6 +765,111 @@ session_start();
                 folderContent.style.display = folderContent.style.display === 'none' ? 'block' : 'none';
             }
         }
+
+        function toggleFolderFiles(folderCheckbox) {
+            const folderItem = folderCheckbox.closest('.directory-item.folder');
+            const folderContent = folderItem.nextElementSibling;
+
+            if (folderContent && folderContent.classList.contains('folder-content')) {
+                const fileCheckboxes = folderContent.querySelectorAll('.file-checkbox');
+                fileCheckboxes.forEach(cb => {
+                    cb.checked = folderCheckbox.checked;
+                });
+                updateBulkActionButtons();
+            }
+        }
+
+        // Bulk Actions
+        function updateBulkActionButtons() {
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            const checkedBoxes = document.querySelectorAll('.file-checkbox:checked');
+            const downloadBtn = document.getElementById('bulkDownloadBtn');
+            const deleteBtn = document.getElementById('bulkDeleteBtn');
+
+            if (checkedBoxes.length > 0) {
+                downloadBtn.disabled = false;
+                deleteBtn.disabled = false;
+            } else {
+                downloadBtn.disabled = true;
+                deleteBtn.disabled = true;
+            }
+        }
+
+        function toggleSelectAll() {
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+
+            checkboxes.forEach(cb => {
+                cb.checked = !allChecked;
+            });
+
+            updateBulkActionButtons();
+        }
+
+        function bulkDownload() {
+            const checkedBoxes = document.querySelectorAll('.file-checkbox:checked');
+            if (checkedBoxes.length === 0) return;
+
+            // Create a hidden iframe to trigger downloads
+            checkedBoxes.forEach((checkbox, index) => {
+                setTimeout(() => {
+                    const iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = 'download.php?file=' + encodeURIComponent(checkbox.dataset.file);
+                    document.body.appendChild(iframe);
+
+                    // Remove iframe after download starts
+                    setTimeout(() => {
+                        document.body.removeChild(iframe);
+                    }, 1000);
+                }, index * 500); // Stagger downloads by 500ms
+            });
+
+            showToast('success', `Downloading ${checkedBoxes.length} file(s)...`);
+        }
+
+        function bulkDelete() {
+            const checkedBoxes = document.querySelectorAll('.file-checkbox:checked');
+            if (checkedBoxes.length === 0) return;
+
+            if (!confirm(`Are you sure you want to delete ${checkedBoxes.length} file(s)?`)) {
+                return;
+            }
+
+            const files = Array.from(checkedBoxes).map(cb => cb.dataset.file);
+
+            // Send delete request
+            fetch('bulk_actions.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'delete',
+                    files: files
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('success', `Successfully deleted ${data.deleted} file(s)`);
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast('error', data.message || 'Failed to delete files');
+                }
+            })
+            .catch(error => {
+                showToast('error', 'An error occurred while deleting files');
+            });
+        }
+
+        // Add event listeners to checkboxes
+        document.addEventListener('DOMContentLoaded', function() {
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            checkboxes.forEach(cb => {
+                cb.addEventListener('change', updateBulkActionButtons);
+            });
+        });
 
         // Toast Notification System
         function showToast(type, message, options = {}) {

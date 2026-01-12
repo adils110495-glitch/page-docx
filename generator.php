@@ -124,6 +124,7 @@ function removeSkipSelectors($html, $skipSelectors) {
 
     // Parse skip selectors (comma-separated)
     $selectors = array_map('trim', explode(',', $skipSelectors));
+    debugLog("[SKIP] Processing skip selectors: " . implode(', ', $selectors));
 
     foreach ($selectors as $selector) {
         if (empty($selector)) continue;
@@ -135,7 +136,9 @@ function removeSkipSelectors($html, $skipSelectors) {
             // ID selector (e.g., #sidebar)
             $id = substr($selector, 1);
             $nodes = $xpath->query("//*[@id='{$id}']");
+            debugLog("[SKIP] Looking for ID selector: #{$id}, found: " . $nodes->length . " elements");
             foreach ($nodes as $node) {
+                debugLog("[SKIP] Removing element: <" . $node->nodeName . "> with id='{$id}'");
                 $nodesToRemove[] = $node;
             }
         } elseif (strpos($selector, '.') === 0) {
@@ -149,22 +152,39 @@ function removeSkipSelectors($html, $skipSelectors) {
             // Element name or class without dot (e.g., header, nav, or sidebar)
             // Try as element name first
             $nodes = $xpath->query("//{$selector}");
+            debugLog("[SKIP] Looking for element name: {$selector}, found: " . $nodes->length . " elements");
             foreach ($nodes as $node) {
+                debugLog("[SKIP] Removing element by name: <{$node->nodeName}>");
                 $nodesToRemove[] = $node;
             }
 
             // Also try as class name
             $nodes = $xpath->query("//*[contains(concat(' ', normalize-space(@class), ' '), ' {$selector} ')]");
+            debugLog("[SKIP] Looking for class name: {$selector}, found: " . $nodes->length . " elements");
             foreach ($nodes as $node) {
+                debugLog("[SKIP] Removing element by class: <{$node->nodeName}> with class='{$node->getAttribute('class')}'");
+                $nodesToRemove[] = $node;
+            }
+
+            // Also try as ID without # prefix
+            $nodes = $xpath->query("//*[@id='{$selector}']");
+            debugLog("[SKIP] Looking for ID (without #): {$selector}, found: " . $nodes->length . " elements");
+            foreach ($nodes as $node) {
+                debugLog("[SKIP] Removing element by ID: <{$node->nodeName}> with id='{$selector}'");
                 $nodesToRemove[] = $node;
             }
         }
 
         // Remove the nodes
+        $removedCount = 0;
         foreach ($nodesToRemove as $node) {
             if ($node->parentNode) {
                 $node->parentNode->removeChild($node);
+                $removedCount++;
             }
+        }
+        if ($removedCount > 0) {
+            debugLog("[SKIP] Removed {$removedCount} node(s) for selector: {$selector}");
         }
     }
 
@@ -262,19 +282,29 @@ function getInnerHtml($node) {
  * Process DOM node and add content to DOCX section
  * Recursively walks through DOM and adds formatted text
  */
-function processNodeForDocx($section, $node, $textRun = null) {
+function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
     foreach ($node->childNodes as $child) {
         $nodeName = strtolower($child->nodeName);
         $nodeValue = trim($child->nodeValue);
 
+        // Debug: Log every element node we encounter
+        if ($child->nodeType === XML_ELEMENT_NODE && in_array($nodeName, ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])) {
+            $childClass = $child->hasAttribute('class') ? $child->getAttribute('class') : 'no-class';
+            debugLog("  [DEPTH $depth] Found element: {$nodeName} (class: " . substr($childClass, 0, 40) . ")");
+        }
+
         // Handle text nodes
         if ($child->nodeType === XML_TEXT_NODE) {
-            if (!empty($nodeValue)) {
+            $trimmedValue = trim($nodeValue);
+            // Only add text if it's not just whitespace
+            if (!empty($trimmedValue)) {
                 if ($textRun) {
                     $textRun->addText($nodeValue);
                 } else {
-                    // Direct text without parent formatting element
-                    $section->addText($nodeValue, ['size' => 11, 'name' => 'Arial']);
+                    // Direct text without parent formatting element - only add if substantial
+                    if (strlen($trimmedValue) > 2) {
+                        $section->addText($trimmedValue, ['size' => 11, 'name' => 'Arial']);
+                    }
                 }
             }
             continue;
@@ -292,17 +322,34 @@ function processNodeForDocx($section, $node, $textRun = null) {
                     $sizes = ['h1' => 18, 'h2' => 16, 'h3' => 14, 'h4' => 13, 'h5' => 12, 'h6' => 11];
                     $text = getTextContent($child);
                     if (!empty($text)) {
+                        // Get the class attribute if it exists
+                        $headingClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
+
+                        // Decode HTML entities to prevent issues with special characters
+                        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                        debugLog("  Adding heading {$nodeName}" . ($headingClass ? " (class: " . substr($headingClass, 0, 30) . ")" : "") . ": " . substr($text, 0, 50));
+
+                        // Use slightly larger size for accordion titles
+                        $size = $sizes[$nodeName];
+                        if (strpos($headingClass, 'accordion__title') !== false && $nodeName === 'h3') {
+                            $size = 13; // Make FAQ questions more prominent
+                        }
+
                         $section->addText(
                             $text,
-                            ['bold' => true, 'size' => $sizes[$nodeName], 'name' => 'Arial'],
+                            ['bold' => true, 'size' => $size, 'name' => 'Arial'],
                             ['spaceAfter' => 240]
                         );
+                    } else {
+                        debugLog("  Empty heading {$nodeName} skipped");
                     }
                     break;
 
                 case 'p':
                     $text = getTextContent($child);
                     if (!empty($text)) {
+                        // Decode HTML entities to prevent issues with special characters
+                        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                         $section->addText(
                             $text,
                             ['size' => 11, 'name' => 'Arial'],
@@ -332,6 +379,10 @@ function processNodeForDocx($section, $node, $textRun = null) {
                     processListForDocx($section, $child, $nodeName);
                     break;
 
+                case 'table':
+                    processTableForDocx($section, $child);
+                    break;
+
                 case 'br':
                     if ($textRun) {
                         $textRun->addTextBreak();
@@ -342,14 +393,52 @@ function processNodeForDocx($section, $node, $textRun = null) {
                 case 'section':
                 case 'article':
                 case 'main':
-                    // Recursively process container elements
-                    processNodeForDocx($section, $child, $textRun);
+                    // Check if div has class that indicates it's a heading
+                    $divClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
+
+                    // Map common heading-like classes to heading styles
+                    $headingClasses = [
+                        'title1' => ['size' => 16, 'bold' => true],  // Large heading
+                        'title2' => ['size' => 14, 'bold' => true],  // Medium heading
+                        'title3' => ['size' => 13, 'bold' => true],  // Small heading
+                        'your-rights-faq__question' => ['size' => 13, 'bold' => true],  // FAQ questions
+                        'your-rights-compensation__title' => ['size' => 16, 'bold' => true],
+                        'bordered-card__title' => ['size' => 14, 'bold' => true],
+                    ];
+
+                    $isHeadingDiv = false;
+                    $headingStyle = null;
+
+                    foreach ($headingClasses as $className => $style) {
+                        if (strpos($divClass, $className) !== false) {
+                            $isHeadingDiv = true;
+                            $headingStyle = $style;
+                            break;
+                        }
+                    }
+
+                    if ($isHeadingDiv && $headingStyle) {
+                        // Treat this div as a heading
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            debugLog("  Adding div heading (class: " . substr($divClass, 0, 30) . "): " . substr($text, 0, 50));
+                            $section->addText(
+                                $text,
+                                array_merge(['name' => 'Arial'], $headingStyle),
+                                ['spaceAfter' => 240]
+                            );
+                        }
+                    } else {
+                        // Recursively process container elements
+                        processNodeForDocx($section, $child, $textRun, $depth + 1);
+                    }
                     break;
 
                 default:
                     // For other elements, just extract text content
                     if ($child->hasChildNodes()) {
-                        processNodeForDocx($section, $child, $textRun);
+                        processNodeForDocx($section, $child, $textRun, $depth + 1);
                     }
                     break;
             }
@@ -364,22 +453,152 @@ function processListForDocx($section, $listNode, $listType) {
     $depth = 0;
     foreach ($listNode->childNodes as $child) {
         if (strtolower($child->nodeName) === 'li') {
-            $text = getTextContent($child);
-            if (!empty($text)) {
-                $section->addListItem(
-                    $text,
-                    $depth,
-                    ['size' => 11, 'name' => 'Arial'],
-                    $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
-                    ['spaceAfter' => 120]
-                );
+            // Check if LI contains heading elements (H1-H6) at any depth
+            $hasHeading = containsHeading($child);
+
+            // If LI contains headings, process it recursively to preserve heading formatting
+            if ($hasHeading) {
+                debugLog("  [LIST] LI contains headings, processing recursively");
+                processNodeForDocx($section, $child, null, 0);
+            } else {
+                // Regular list item - extract text
+                $text = getTextContent($child);
+                if (!empty($text)) {
+                    $section->addListItem(
+                        $text,
+                        $depth,
+                        ['size' => 11, 'name' => 'Arial'],
+                        $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
+                        ['spaceAfter' => 120]
+                    );
+                }
             }
         }
     }
 }
 
 /**
+ * Check if a node contains any heading elements (H1-H6) at any depth
+ */
+function containsHeading($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE) {
+        $nodeName = strtolower($node->nodeName);
+        if (in_array($nodeName, ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])) {
+            return true;
+        }
+    }
+
+    // Recursively check children
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (containsHeading($child)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Process table elements for DOCX
+ */
+function processTableForDocx($section, $tableNode) {
+    // Count columns from first row
+    $firstRow = null;
+    $columnCount = 0;
+
+    foreach ($tableNode->childNodes as $child) {
+        if (strtolower($child->nodeName) === 'tbody' || strtolower($child->nodeName) === 'thead') {
+            foreach ($child->childNodes as $row) {
+                if (strtolower($row->nodeName) === 'tr') {
+                    $firstRow = $row;
+                    break 2;
+                }
+            }
+        } elseif (strtolower($child->nodeName) === 'tr') {
+            $firstRow = $child;
+            break;
+        }
+    }
+
+    if (!$firstRow) return;
+
+    // Count columns
+    foreach ($firstRow->childNodes as $cell) {
+        $cellName = strtolower($cell->nodeName);
+        if ($cellName === 'td' || $cellName === 'th') {
+            $columnCount++;
+        }
+    }
+
+    if ($columnCount === 0) return;
+
+    // Create table
+    $table = $section->addTable([
+        'borderSize' => 6,
+        'borderColor' => '999999',
+        'width' => 100 * 50, // 100% width
+        'unit' => \PhpOffice\PhpWord\SimpleType\TblWidth::PERCENT
+    ]);
+
+    // Process table rows
+    $isFirstRow = true;
+    foreach ($tableNode->childNodes as $section) {
+        $sectionName = strtolower($section->nodeName);
+
+        if ($sectionName === 'thead' || $sectionName === 'tbody' || $sectionName === 'tfoot') {
+            foreach ($section->childNodes as $row) {
+                if (strtolower($row->nodeName) === 'tr') {
+                    processTableRow($table, $row, $isFirstRow);
+                    $isFirstRow = false;
+                }
+            }
+        } elseif ($sectionName === 'tr') {
+            processTableRow($table, $section, $isFirstRow);
+            $isFirstRow = false;
+        }
+    }
+}
+
+/**
+ * Process a table row for DOCX
+ */
+function processTableRow($table, $rowNode, $isHeader = false) {
+    $table->addRow();
+
+    foreach ($rowNode->childNodes as $cell) {
+        $cellName = strtolower($cell->nodeName);
+
+        if ($cellName === 'td' || $cellName === 'th') {
+            $isHeaderCell = ($cellName === 'th' || $isHeader);
+            $cellText = getTextContent($cell);
+
+            $cellStyle = [
+                'valign' => 'center',
+                'bgColor' => $isHeaderCell ? 'E8E8E8' : null
+            ];
+
+            $textStyle = [
+                'size' => 10,
+                'name' => 'Arial',
+                'bold' => $isHeaderCell
+            ];
+
+            $paragraphStyle = [
+                'spaceAfter' => 0,
+                'spaceBefore' => 0
+            ];
+
+            $cell = $table->addCell(null, $cellStyle);
+            $cell->addText($cellText, $textStyle, $paragraphStyle);
+        }
+    }
+}
+
+/**
  * Get all text content from a DOM node
+ * Properly handles text extraction while preserving spaces between elements
  */
 function getTextContent($node) {
     $text = '';
@@ -387,7 +606,12 @@ function getTextContent($node) {
         if ($child->nodeType === XML_TEXT_NODE) {
             $text .= $child->nodeValue;
         } elseif ($child->hasChildNodes()) {
-            $text .= getTextContent($child);
+            $childText = getTextContent($child);
+            // Add space between inline elements if needed
+            if (!empty($childText) && !empty($text) && !preg_match('/\s$/', $text)) {
+                $text .= ' ';
+            }
+            $text .= $childText;
         }
     }
     return trim($text);
@@ -407,10 +631,14 @@ function generateDocx($content, $filename, $project = null) {
     // Add Meta Title if available
     if (!empty($content['metaTitle'])) {
         debugLog("  Adding meta title: " . substr($content['metaTitle'], 0, 50));
-        $section->addText(
+        $textRun = $section->addTextRun(['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::LEFT, 'spaceAfter' => 240]);
+        $textRun->addText(
+            'Meta Title: ',
+            ['bold' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666']
+        );
+        $textRun->addText(
             htmlspecialchars_decode($content['metaTitle'], ENT_QUOTES),
-            ['bold' => true, 'size' => 18, 'name' => 'Arial'],
-            ['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::LEFT, 'spaceAfter' => 240]
+            ['bold' => true, 'size' => 18, 'name' => 'Arial']
         );
     } else {
         debugLog("  No meta title found");
@@ -419,10 +647,14 @@ function generateDocx($content, $filename, $project = null) {
     // Add Meta Description if available
     if (!empty($content['metaDescription'])) {
         debugLog("  Adding meta description: " . substr($content['metaDescription'], 0, 50));
-        $section->addText(
+        $textRun = $section->addTextRun(['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::LEFT, 'spaceAfter' => 360]);
+        $textRun->addText(
+            'Meta Description: ',
+            ['bold' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666']
+        );
+        $textRun->addText(
             htmlspecialchars_decode($content['metaDescription'], ENT_QUOTES),
-            ['italic' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666'],
-            ['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::LEFT, 'spaceAfter' => 360]
+            ['italic' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666']
         );
     } else {
         debugLog("  No meta description found");
@@ -432,9 +664,21 @@ function generateDocx($content, $filename, $project = null) {
     if (!empty($content['html'])) {
         debugLog("  Adding content to DOCX. HTML length: " . strlen($content['html']) . " bytes");
 
+        // Count H3s before cleaning
+        $h3CountBefore = substr_count($content['html'], '<h3');
+        debugLog("  H3 tags found before cleaning: " . $h3CountBefore);
+
         // Clean HTML for better processing
         $cleanHtml = cleanHtmlForDocx($content['html']);
         debugLog("  After cleaning: " . strlen($cleanHtml) . " bytes");
+
+        // Count H3s after cleaning
+        $h3CountAfter = substr_count($cleanHtml, '<h3');
+        debugLog("  H3 tags found after cleaning: " . $h3CountAfter);
+
+        // Save cleaned HTML for debugging
+        @file_put_contents(__DIR__ . '/output/cleaned_html_debug.html', $cleanHtml);
+        debugLog("  Cleaned HTML saved to output/cleaned_html_debug.html for inspection");
 
         // Convert HTML to formatted text for DOCX
         // PHPWord's HTML parser has limitations, so we'll extract and format text properly
@@ -523,8 +767,13 @@ function cleanHtmlForDocx($html) {
     $html = preg_replace('/<noscript\b[^>]*>(.*?)<\/noscript>/is', '', $html);
     $html = preg_replace('/<iframe\b[^>]*>(.*?)<\/iframe>/is', '', $html);
 
-    // Remove empty tags that can cause issues
+    // Remove empty tags that can cause issues, but preserve heading tags
+    // First, temporarily mark headings to protect them
+    $html = preg_replace('/<(h[1-6])\b([^>]*)>\s*<\/\1>/', '<$1$2>__PRESERVE__</$1>', $html);
+    // Remove other empty tags
     $html = preg_replace('/<(\w+)[^>]*>\s*<\/\1>/', '', $html);
+    // Restore preserved headings (they'll be extracted later even if empty)
+    $html = str_replace('__PRESERVE__', '', $html);
 
     // Convert common HTML entities
     $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
