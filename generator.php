@@ -324,9 +324,6 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     if (!empty($text)) {
                         // Get the class attribute if it exists
                         $headingClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
-
-                        // Decode HTML entities to prevent issues with special characters
-                        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                         debugLog("  Adding heading {$nodeName}" . ($headingClass ? " (class: " . substr($headingClass, 0, 30) . ")" : "") . ": " . substr($text, 0, 50));
 
                         // Use slightly larger size for accordion titles
@@ -335,8 +332,10 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                             $size = 13; // Make FAQ questions more prominent
                         }
 
-                        $section->addText(
-                            $text,
+                        // Use addElementContent to handle <br> tags
+                        addElementContent(
+                            $section,
+                            $child,
                             ['bold' => true, 'size' => $size, 'name' => 'Arial'],
                             ['spaceAfter' => 240]
                         );
@@ -348,10 +347,10 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                 case 'p':
                     $text = getTextContent($child);
                     if (!empty($text)) {
-                        // Decode HTML entities to prevent issues with special characters
-                        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                        $section->addText(
-                            $text,
+                        // Use addElementContent to handle <br> tags
+                        addElementContent(
+                            $section,
+                            $child,
                             ['size' => 11, 'name' => 'Arial'],
                             ['spaceAfter' => 200]
                         );
@@ -386,6 +385,9 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                 case 'br':
                     if ($textRun) {
                         $textRun->addTextBreak();
+                    } else {
+                        // Add line break when not in a text run
+                        $section->addTextBreak();
                     }
                     break;
 
@@ -421,10 +423,11 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                         // Treat this div as a heading
                         $text = getTextContent($child);
                         if (!empty($text)) {
-                            $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                             debugLog("  Adding div heading (class: " . substr($divClass, 0, 30) . "): " . substr($text, 0, 50));
-                            $section->addText(
-                                $text,
+                            // Use addElementContent to handle <br> tags
+                            addElementContent(
+                                $section,
+                                $child,
                                 array_merge(['name' => 'Arial'], $headingStyle),
                                 ['spaceAfter' => 240]
                             );
@@ -461,16 +464,28 @@ function processListForDocx($section, $listNode, $listType) {
                 debugLog("  [LIST] LI contains headings, processing recursively");
                 processNodeForDocx($section, $child, null, 0);
             } else {
-                // Regular list item - extract text
-                $text = getTextContent($child);
-                if (!empty($text)) {
-                    $section->addListItem(
-                        $text,
+                // Check if LI contains <br> tags
+                if (containsBrTag($child)) {
+                    // Use TextRun for list item with line breaks
+                    $listItemRun = $section->addListItemRun(
                         $depth,
-                        ['size' => 11, 'name' => 'Arial'],
                         $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
                         ['spaceAfter' => 120]
                     );
+                    processInlineContent($listItemRun, $child, ['size' => 11, 'name' => 'Arial']);
+                } else {
+                    // Regular list item - extract text
+                    $text = getTextContent($child);
+                    if (!empty($text)) {
+                        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                        $section->addListItem(
+                            $text,
+                            $depth,
+                            ['size' => 11, 'name' => 'Arial'],
+                            $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
+                            ['spaceAfter' => 120]
+                        );
+                    }
                 }
             }
         }
@@ -605,16 +620,133 @@ function getTextContent($node) {
     foreach ($node->childNodes as $child) {
         if ($child->nodeType === XML_TEXT_NODE) {
             $text .= $child->nodeValue;
-        } elseif ($child->hasChildNodes()) {
-            $childText = getTextContent($child);
-            // Add space between inline elements if needed
-            if (!empty($childText) && !empty($text) && !preg_match('/\s$/', $text)) {
-                $text .= ' ';
+        } elseif ($child->nodeType === XML_ELEMENT_NODE) {
+            $nodeName = strtolower($child->nodeName);
+
+            // Handle <br> tags as newlines
+            if ($nodeName === 'br') {
+                $text .= "\n";
+            } elseif ($child->hasChildNodes()) {
+                $childText = getTextContent($child);
+                // Add space between inline elements if needed
+                if (!empty($childText) && !empty($text) && !preg_match('/\s$/', $text)) {
+                    $text .= ' ';
+                }
+                $text .= $childText;
             }
-            $text .= $childText;
         }
     }
     return trim($text);
+}
+
+/**
+ * Check if a node contains <br> tags
+ */
+function containsBrTag($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE && strtolower($node->nodeName) === 'br') {
+        return true;
+    }
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (containsBrTag($child)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Add text with line breaks to section using TextRun
+ */
+function addTextWithLineBreaks($section, $text, $fontStyle = [], $paragraphStyle = []) {
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $lines = explode("\n", $text);
+
+    if (count($lines) === 1) {
+        // No line breaks, use simple addText
+        $section->addText($text, $fontStyle, $paragraphStyle);
+    } else {
+        // Has line breaks, use TextRun
+        $textRun = $section->addTextRun($paragraphStyle);
+        foreach ($lines as $index => $line) {
+            $line = trim($line);
+            if (!empty($line)) {
+                $textRun->addText($line, $fontStyle);
+            }
+            // Add line break except after last line
+            if ($index < count($lines) - 1) {
+                $textRun->addTextBreak();
+            }
+        }
+    }
+}
+
+/**
+ * Process inline content of an element, handling <br> tags and inline formatting
+ * This renders content directly to a TextRun, preserving <br> as line breaks
+ */
+function processInlineContent($textRun, $node, $fontStyle = []) {
+    foreach ($node->childNodes as $child) {
+        if ($child->nodeType === XML_TEXT_NODE) {
+            $text = $child->nodeValue;
+            if (!empty(trim($text))) {
+                $textRun->addText($text, $fontStyle);
+            }
+        } elseif ($child->nodeType === XML_ELEMENT_NODE) {
+            $nodeName = strtolower($child->nodeName);
+
+            switch ($nodeName) {
+                case 'br':
+                    $textRun->addTextBreak();
+                    break;
+                case 'strong':
+                case 'b':
+                    $boldStyle = array_merge($fontStyle, ['bold' => true]);
+                    processInlineContent($textRun, $child, $boldStyle);
+                    break;
+                case 'em':
+                case 'i':
+                    $italicStyle = array_merge($fontStyle, ['italic' => true]);
+                    processInlineContent($textRun, $child, $italicStyle);
+                    break;
+                case 'u':
+                    $underlineStyle = array_merge($fontStyle, ['underline' => 'single']);
+                    processInlineContent($textRun, $child, $underlineStyle);
+                    break;
+                case 'a':
+                    // Handle links - just extract text
+                    processInlineContent($textRun, $child, $fontStyle);
+                    break;
+                case 'span':
+                case 'sup':
+                case 'sub':
+                default:
+                    // Process other inline elements recursively
+                    processInlineContent($textRun, $child, $fontStyle);
+                    break;
+            }
+        }
+    }
+}
+
+/**
+ * Add element content to section, handling <br> tags properly
+ */
+function addElementContent($section, $node, $fontStyle = [], $paragraphStyle = []) {
+    // Check if element contains <br> tags
+    if (containsBrTag($node)) {
+        // Use TextRun to handle inline content with <br>
+        $textRun = $section->addTextRun($paragraphStyle);
+        processInlineContent($textRun, $node, $fontStyle);
+    } else {
+        // No <br> tags, use simple text extraction
+        $text = getTextContent($node);
+        if (!empty($text)) {
+            $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $section->addText($text, $fontStyle, $paragraphStyle);
+        }
+    }
 }
 
 /**

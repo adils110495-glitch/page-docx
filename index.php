@@ -250,7 +250,6 @@ session_start();
             padding: 30px 40px;
             display: flex;
             flex-direction: column;
-            overflow: hidden;
         }
 
         .form-wrapper {
