@@ -312,6 +312,24 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
 
         // Handle element nodes
         if ($child->nodeType === XML_ELEMENT_NODE) {
+            // Check for title1 class on ANY element - treat as h3 heading
+            $elementClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
+            if (strpos($elementClass, 'title1') !== false) {
+                $text = getTextContent($child);
+                if (!empty($text)) {
+                    $text = sanitizeTextForDocx($text);
+                    debugLog("  Adding title1 as h3 (element: {$nodeName}, class: " . substr($elementClass, 0, 30) . "): " . substr($text, 0, 50));
+                    $section->addText(
+                        $text,
+                        ['bold' => true, 'size' => 14, 'name' => 'Arial'],
+                        ['spaceAfter' => 240]
+                    );
+                    // Add line break after title1
+                    $section->addTextBreak();
+                }
+                continue; // Skip to next element
+            }
+
             switch ($nodeName) {
                 case 'h1':
                 case 'h2':
@@ -320,19 +338,34 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                 case 'h5':
                 case 'h6':
                     $sizes = ['h1' => 18, 'h2' => 16, 'h3' => 14, 'h4' => 13, 'h5' => 12, 'h6' => 11];
-                    $text = getTextContent($child);
-                    if (!empty($text)) {
-                        // Get the class attribute if it exists
-                        $headingClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
-                        debugLog("  Adding heading {$nodeName}" . ($headingClass ? " (class: " . substr($headingClass, 0, 30) . ")" : "") . ": " . substr($text, 0, 50));
+                    // Get the class attribute if it exists
+                    $headingClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
 
-                        // Use slightly larger size for accordion titles
-                        $size = $sizes[$nodeName];
-                        if (strpos($headingClass, 'accordion__title') !== false && $nodeName === 'h3') {
-                            $size = 13; // Make FAQ questions more prominent
+                    // Check for title1 class - treat as h3 (size 14) with line break after
+                    if (strpos($headingClass, 'title1') !== false) {
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            $text = sanitizeTextForDocx($text);
+                            debugLog("  Adding title1 heading as h3: " . substr($text, 0, 50));
+                            $section->addText(
+                                $text,
+                                ['bold' => true, 'size' => 14, 'name' => 'Arial'],
+                                ['spaceAfter' => 240]
+                            );
+                            $section->addTextBreak();
                         }
+                        break;
+                    }
 
-                        // Use addElementContent to handle <br> tags
+                    // Use slightly larger size for accordion titles
+                    $size = $sizes[$nodeName];
+                    if (strpos($headingClass, 'accordion__title') !== false && $nodeName === 'h3') {
+                        $size = 13; // Make FAQ questions more prominent
+                    }
+
+                    // Check if heading contains <br> tags
+                    if (containsBrTag($child)) {
+                        debugLog("  Adding heading {$nodeName} with line breaks");
                         addElementContent(
                             $section,
                             $child,
@@ -340,20 +373,41 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                             ['spaceAfter' => 240]
                         );
                     } else {
-                        debugLog("  Empty heading {$nodeName} skipped");
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            debugLog("  Adding heading {$nodeName}" . ($headingClass ? " (class: " . substr($headingClass, 0, 30) . ")" : "") . ": " . substr($text, 0, 50));
+                            $text = sanitizeTextForDocx($text);
+                            $section->addText(
+                                $text,
+                                ['bold' => true, 'size' => $size, 'name' => 'Arial'],
+                                ['spaceAfter' => 240]
+                            );
+                        } else {
+                            debugLog("  Empty heading {$nodeName} skipped");
+                        }
                     }
                     break;
 
                 case 'p':
-                    $text = getTextContent($child);
-                    if (!empty($text)) {
-                        // Use addElementContent to handle <br> tags
+                    // Check if paragraph contains <br> tags
+                    if (containsBrTag($child)) {
+                        // Use TextRun to handle line breaks properly
                         addElementContent(
                             $section,
                             $child,
                             ['size' => 11, 'name' => 'Arial'],
                             ['spaceAfter' => 200]
                         );
+                    } else {
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            $text = sanitizeTextForDocx($text);
+                            $section->addText(
+                                $text,
+                                ['size' => 11, 'name' => 'Arial'],
+                                ['spaceAfter' => 200]
+                            );
+                        }
                     }
                     break;
 
@@ -398,9 +452,24 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     // Check if div has class that indicates it's a heading
                     $divClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
 
-                    // Map common heading-like classes to heading styles
+                    // Check for title1 class - treat as h3 with line break after
+                    if (strpos($divClass, 'title1') !== false) {
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            $text = sanitizeTextForDocx($text);
+                            debugLog("  Adding title1 DIV as h3: " . substr($text, 0, 50));
+                            $section->addText(
+                                $text,
+                                ['bold' => true, 'size' => 14, 'name' => 'Arial'],
+                                ['spaceAfter' => 240]
+                            );
+                            $section->addTextBreak();
+                        }
+                        break;
+                    }
+
+                    // Map other common heading-like classes to heading styles
                     $headingClasses = [
-                        'title1' => ['size' => 16, 'bold' => true],  // Large heading
                         'title2' => ['size' => 14, 'bold' => true],  // Medium heading
                         'title3' => ['size' => 13, 'bold' => true],  // Small heading
                         'your-rights-faq__question' => ['size' => 13, 'bold' => true],  // FAQ questions
@@ -423,11 +492,10 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                         // Treat this div as a heading
                         $text = getTextContent($child);
                         if (!empty($text)) {
+                            $text = sanitizeTextForDocx($text);
                             debugLog("  Adding div heading (class: " . substr($divClass, 0, 30) . "): " . substr($text, 0, 50));
-                            // Use addElementContent to handle <br> tags
-                            addElementContent(
-                                $section,
-                                $child,
+                            $section->addText(
+                                $text,
                                 array_merge(['name' => 'Arial'], $headingStyle),
                                 ['spaceAfter' => 240]
                             );
@@ -456,36 +524,26 @@ function processListForDocx($section, $listNode, $listType) {
     $depth = 0;
     foreach ($listNode->childNodes as $child) {
         if (strtolower($child->nodeName) === 'li') {
-            // Check if LI contains heading elements (H1-H6) at any depth
+            // Check if LI contains heading elements (H1-H6) or title1 class elements
             $hasHeading = containsHeading($child);
+            $hasTitle1 = containsTitle1Class($child);
 
-            // If LI contains headings, process it recursively to preserve heading formatting
-            if ($hasHeading) {
-                debugLog("  [LIST] LI contains headings, processing recursively");
+            // If LI contains headings or title1 class, process it recursively to preserve formatting
+            if ($hasHeading || $hasTitle1) {
+                debugLog("  [LIST] LI contains headings/title1, processing recursively");
                 processNodeForDocx($section, $child, null, 0);
             } else {
-                // Check if LI contains <br> tags
-                if (containsBrTag($child)) {
-                    // Use TextRun for list item with line breaks
-                    $listItemRun = $section->addListItemRun(
+                // Regular list item - extract text
+                $text = getTextContent($child);
+                if (!empty($text)) {
+                    $text = sanitizeTextForDocx($text);
+                    $section->addListItem(
+                        $text,
                         $depth,
+                        ['size' => 11, 'name' => 'Arial'],
                         $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
                         ['spaceAfter' => 120]
                     );
-                    processInlineContent($listItemRun, $child, ['size' => 11, 'name' => 'Arial']);
-                } else {
-                    // Regular list item - extract text
-                    $text = getTextContent($child);
-                    if (!empty($text)) {
-                        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                        $section->addListItem(
-                            $text,
-                            $depth,
-                            ['size' => 11, 'name' => 'Arial'],
-                            $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
-                            ['spaceAfter' => 120]
-                        );
-                    }
                 }
             }
         }
@@ -507,6 +565,29 @@ function containsHeading($node) {
     if ($node->hasChildNodes()) {
         foreach ($node->childNodes as $child) {
             if (containsHeading($child)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Check if a node contains any element with title1 class at any depth
+ */
+function containsTitle1Class($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE) {
+        $class = $node->hasAttribute('class') ? $node->getAttribute('class') : '';
+        if (strpos($class, 'title1') !== false) {
+            return true;
+        }
+    }
+
+    // Recursively check children
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (containsTitle1Class($child)) {
                 return true;
             }
         }
@@ -582,12 +663,11 @@ function processTableForDocx($section, $tableNode) {
 function processTableRow($table, $rowNode, $isHeader = false) {
     $table->addRow();
 
-    foreach ($rowNode->childNodes as $cell) {
-        $cellName = strtolower($cell->nodeName);
+    foreach ($rowNode->childNodes as $cellNode) {
+        $cellName = strtolower($cellNode->nodeName);
 
         if ($cellName === 'td' || $cellName === 'th') {
             $isHeaderCell = ($cellName === 'th' || $isHeader);
-            $cellText = getTextContent($cell);
 
             $cellStyle = [
                 'valign' => 'center',
@@ -606,9 +686,76 @@ function processTableRow($table, $rowNode, $isHeader = false) {
             ];
 
             $cell = $table->addCell(null, $cellStyle);
-            $cell->addText($cellText, $textStyle, $paragraphStyle);
+
+            // Check if cell contains <br> tags
+            if (containsBrTag($cellNode)) {
+                // Use TextRun to handle line breaks properly
+                $textRun = $cell->addTextRun($paragraphStyle);
+                processInlineContent($textRun, $cellNode, $textStyle);
+            } else {
+                $cellText = getTextContent($cellNode);
+                $cellText = sanitizeTextForDocx($cellText);
+                $cell->addText($cellText, $textStyle, $paragraphStyle);
+            }
         }
     }
+}
+
+/**
+ * Sanitize text for DOCX - remove emojis and problematic unicode characters
+ */
+function sanitizeTextForDocx($text) {
+    // Decode HTML entities first
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    // Remove emojis and special unicode characters (surrogate pairs)
+    $text = preg_replace('/[\x{10000}-\x{10FFFF}]/u', '', $text);
+    // Normalize Cyrillic lookalike characters to Latin equivalents
+    // This fixes issues where Cyrillic characters are mixed with Latin text
+    $text = normalizeCyrillicToLatin($text);
+    // Replace multiple whitespace with single space
+    $text = preg_replace('/\s+/', ' ', $text);
+    // Remove or replace problematic characters for XML
+    // Replace ampersand with "and" to avoid XML entity issues
+    $text = str_replace('&', 'and', $text);
+    // Remove other control characters that might cause issues
+    $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
+    return trim($text);
+}
+
+/**
+ * Normalize Cyrillic lookalike characters to their Latin equivalents
+ * Some websites use mixed character sets which can cause DOCX corruption
+ */
+function normalizeCyrillicToLatin($text) {
+    // Cyrillic to Latin character mappings (homoglyphs)
+    $cyrillicToLatin = [
+        // Lowercase
+        'а' => 'a',  // Cyrillic а (U+0430) -> Latin a
+        'с' => 'c',  // Cyrillic с (U+0441) -> Latin c
+        'е' => 'e',  // Cyrillic е (U+0435) -> Latin e
+        'о' => 'o',  // Cyrillic о (U+043E) -> Latin o
+        'р' => 'p',  // Cyrillic р (U+0440) -> Latin p
+        'х' => 'x',  // Cyrillic х (U+0445) -> Latin x
+        'у' => 'y',  // Cyrillic у (U+0443) -> Latin y
+        'і' => 'i',  // Cyrillic і (U+0456) -> Latin i
+        'ј' => 'j',  // Cyrillic ј (U+0458) -> Latin j
+        'ѕ' => 's',  // Cyrillic ѕ (U+0455) -> Latin s
+        // Uppercase
+        'А' => 'A',  // Cyrillic А (U+0410) -> Latin A
+        'В' => 'B',  // Cyrillic В (U+0412) -> Latin B
+        'С' => 'C',  // Cyrillic С (U+0421) -> Latin C
+        'Е' => 'E',  // Cyrillic Е (U+0415) -> Latin E
+        'Н' => 'H',  // Cyrillic Н (U+041D) -> Latin H
+        'К' => 'K',  // Cyrillic К (U+041A) -> Latin K
+        'М' => 'M',  // Cyrillic М (U+041C) -> Latin M
+        'О' => 'O',  // Cyrillic О (U+041E) -> Latin O
+        'Р' => 'P',  // Cyrillic Р (U+0420) -> Latin P
+        'Т' => 'T',  // Cyrillic Т (U+0422) -> Latin T
+        'Х' => 'X',  // Cyrillic Х (U+0425) -> Latin X
+        'І' => 'I',  // Cyrillic І (U+0406) -> Latin I
+    ];
+
+    return strtr($text, $cyrillicToLatin);
 }
 
 /**
@@ -623,9 +770,9 @@ function getTextContent($node) {
         } elseif ($child->nodeType === XML_ELEMENT_NODE) {
             $nodeName = strtolower($child->nodeName);
 
-            // Handle <br> tags as newlines
+            // Handle <br> tags as space
             if ($nodeName === 'br') {
-                $text .= "\n";
+                $text .= ' ';
             } elseif ($child->hasChildNodes()) {
                 $childText = getTextContent($child);
                 // Add space between inline elements if needed
@@ -687,14 +834,26 @@ function addTextWithLineBreaks($section, $text, $fontStyle = [], $paragraphStyle
  * This renders content directly to a TextRun, preserving <br> as line breaks
  */
 function processInlineContent($textRun, $node, $fontStyle = []) {
+    // Block-level elements that should not be processed inline
+    $blockElements = ['div', 'p', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'section', 'article', 'header', 'footer', 'nav', 'aside'];
+
     foreach ($node->childNodes as $child) {
         if ($child->nodeType === XML_TEXT_NODE) {
             $text = $child->nodeValue;
             if (!empty(trim($text))) {
-                $textRun->addText($text, $fontStyle);
+                // Sanitize text (handles entities, Cyrillic, ampersands, etc.)
+                $text = sanitizeTextForDocx($text);
+                if (!empty($text)) {
+                    $textRun->addText($text, $fontStyle);
+                }
             }
         } elseif ($child->nodeType === XML_ELEMENT_NODE) {
             $nodeName = strtolower($child->nodeName);
+
+            // Skip block-level elements - they shouldn't be processed inline
+            if (in_array($nodeName, $blockElements)) {
+                continue;
+            }
 
             switch ($nodeName) {
                 case 'br':
@@ -734,16 +893,27 @@ function processInlineContent($textRun, $node, $fontStyle = []) {
  * Add element content to section, handling <br> tags properly
  */
 function addElementContent($section, $node, $fontStyle = [], $paragraphStyle = []) {
-    // Check if element contains <br> tags
-    if (containsBrTag($node)) {
-        // Use TextRun to handle inline content with <br>
-        $textRun = $section->addTextRun($paragraphStyle);
-        processInlineContent($textRun, $node, $fontStyle);
-    } else {
-        // No <br> tags, use simple text extraction
+    try {
+        // Check if element contains <br> tags
+        if (containsBrTag($node)) {
+            // Use TextRun to handle inline content with <br>
+            $textRun = $section->addTextRun($paragraphStyle);
+            processInlineContent($textRun, $node, $fontStyle);
+        } else {
+            // No <br> tags, use simple text extraction
+            $text = getTextContent($node);
+            if (!empty($text)) {
+                $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $section->addText($text, $fontStyle, $paragraphStyle);
+            }
+        }
+    } catch (Exception $e) {
+        // Fallback to simple text if TextRun fails
         $text = getTextContent($node);
         if (!empty($text)) {
             $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            // Replace newlines with spaces for fallback
+            $text = preg_replace('/\s+/', ' ', $text);
             $section->addText($text, $fontStyle, $paragraphStyle);
         }
     }
@@ -763,14 +933,11 @@ function generateDocx($content, $filename, $project = null) {
     // Add Meta Title if available
     if (!empty($content['metaTitle'])) {
         debugLog("  Adding meta title: " . substr($content['metaTitle'], 0, 50));
-        $textRun = $section->addTextRun(['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::LEFT, 'spaceAfter' => 240]);
-        $textRun->addText(
-            'Meta Title: ',
-            ['bold' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666']
-        );
-        $textRun->addText(
-            htmlspecialchars_decode($content['metaTitle'], ENT_QUOTES),
-            ['bold' => true, 'size' => 18, 'name' => 'Arial']
+        $metaTitle = sanitizeTextForDocx($content['metaTitle']);
+        $section->addText(
+            'Meta Title: ' . $metaTitle,
+            ['bold' => true, 'size' => 14, 'name' => 'Arial'],
+            ['spaceAfter' => 240]
         );
     } else {
         debugLog("  No meta title found");
@@ -779,14 +946,11 @@ function generateDocx($content, $filename, $project = null) {
     // Add Meta Description if available
     if (!empty($content['metaDescription'])) {
         debugLog("  Adding meta description: " . substr($content['metaDescription'], 0, 50));
-        $textRun = $section->addTextRun(['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::LEFT, 'spaceAfter' => 360]);
-        $textRun->addText(
-            'Meta Description: ',
-            ['bold' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666']
-        );
-        $textRun->addText(
-            htmlspecialchars_decode($content['metaDescription'], ENT_QUOTES),
-            ['italic' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666']
+        $metaDesc = sanitizeTextForDocx($content['metaDescription']);
+        $section->addText(
+            'Meta Description: ' . $metaDesc,
+            ['italic' => true, 'size' => 11, 'name' => 'Arial', 'color' => '666666'],
+            ['spaceAfter' => 360]
         );
     } else {
         debugLog("  No meta description found");
