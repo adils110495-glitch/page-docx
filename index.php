@@ -133,6 +133,25 @@ session_start();
             content: "📁 ";
         }
 
+        .directory-item.folder {
+            display: flex;
+            align-items: center;
+        }
+
+        .directory-item.folder .folder-name {
+            flex: 1;
+            cursor: pointer;
+        }
+
+        .directory-item.folder .folder-delete-btn {
+            display: none;
+            margin-left: 10px;
+        }
+
+        .directory-item.folder:hover .folder-delete-btn {
+            display: inline-block;
+        }
+
         .file-actions {
             display: none;
             gap: 8px;
@@ -152,10 +171,6 @@ session_start();
             color: white;
             font-weight: 500;
             transition: opacity 0.2s;
-        }
-
-        .file-action-btn:hover {
-            opacity: 0.8;
         }
 
         .btn-download {
@@ -352,7 +367,7 @@ session_start();
             font-weight: 600;
             cursor: pointer;
             transition: transform 0.2s, box-shadow 0.2s;
-            width: 100%;
+           /*  width: 100%; */
             flex-shrink: 0;
         }
 
@@ -622,7 +637,8 @@ session_start();
                             $hasContent = true;
                             echo '<div class="directory-item folder">';
                             echo '<input type="checkbox" class="folder-checkbox" onclick="event.stopPropagation(); toggleFolderFiles(this);" style="margin-right: 8px;">';
-                            echo '<span onclick="toggleFolder(this.parentElement)">' . htmlspecialchars($item) . '</span>';
+                            echo '<span class="folder-name" onclick="toggleFolder(this.closest(\'.directory-item.folder\'))">' . htmlspecialchars($item) . '</span>';
+                            echo '<button class="file-action-btn btn-remove folder-delete-btn" onclick="event.stopPropagation(); deleteFolder(\'' . htmlspecialchars('output/' . $relativePath) . '\')">Delete</button>';
                             echo '</div>';
                             echo '<div class="folder-content" style="padding-left: 20px;">';
                             scanDirectory($fullPath, $baseDir);
@@ -859,6 +875,35 @@ session_start();
             })
             .catch(error => {
                 showToast('error', 'An error occurred while deleting files');
+            });
+        }
+
+        function deleteFolder(folderPath) {
+            if (!confirm(`Are you sure you want to delete the folder "${folderPath}" and all its contents?`)) {
+                return;
+            }
+
+            fetch('bulk_actions.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: 'delete_folder',
+                    folder: folderPath
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('success', `Successfully deleted folder and ${data.deleted} file(s)`);
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast('error', data.message || 'Failed to delete folder');
+                }
+            })
+            .catch(error => {
+                showToast('error', 'An error occurred while deleting folder');
             });
         }
 
