@@ -701,6 +701,7 @@ if (file_exists($settingsFile)) {
         <div style="display:flex;justify-content:center;gap:8px;margin-top:14px;">
             <a href="index.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;background:white;color:#667eea;border:2px solid white;">DOCX Generator</a>
             <a href="meta-extractor.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;color:rgba(255,255,255,0.8);background:rgba(255,255,255,0.15);border:2px solid transparent;">Meta Extractor</a>
+            <a href="meta-tool/index.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;color:rgba(255,255,255,0.8);background:rgba(255,255,255,0.15);border:2px solid transparent;">Meta Translator</a>
         </div>
     </div>
 

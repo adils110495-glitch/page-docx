@@ -412,6 +412,7 @@ if (file_exists($settingsFile)) {
     <div class="nav-tabs">
         <a href="index.php" class="nav-tab">DOCX Generator</a>
         <a href="meta-extractor.php" class="nav-tab active">Meta Extractor</a>
+        <a href="meta-tool/index.php" class="nav-tab">Meta Translator</a>
     </div>
 </div>
 

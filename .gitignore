@@ -19,3 +19,9 @@ Thumbs.db
 # Logs
 *.log
 /output/
+
+# Environment secrets
+.env
+meta-tool/tmp/
+meta-tool/logs/
+meta-tool/output.csv
