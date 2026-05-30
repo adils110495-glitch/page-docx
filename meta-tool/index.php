@@ -174,6 +174,7 @@
     <a href="../index.php" class="nav-tab">DOCX Generator</a>
     <a href="../meta-extractor.php" class="nav-tab">Meta Extractor</a>
     <a href="index.php" class="nav-tab active">Meta Translator</a>
+    <a href="../lang-generator.php" class="nav-tab">Language Tab Generator</a>
   </div>
 </div>
 

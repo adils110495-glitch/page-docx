@@ -7,7 +7,7 @@ session_start();
  */
 
 // Determine where to redirect after removal (whitelist only)
-$allowed  = ['index.php', 'meta-extractor.php'];
+$allowed  = ['index.php', 'meta-extractor.php', 'lang-generator.php'];
 $redirect = isset($_GET['redirect']) && in_array($_GET['redirect'], $allowed, true)
     ? $_GET['redirect']
     : 'index.php';
@@ -45,10 +45,12 @@ if (!is_file($fullPath)) {
     exit;
 }
 
+$sessionKey = ($redirect === 'lang-generator.php') ? 'lang_status' : 'status';
+
 if (unlink($fullPath)) {
-    $_SESSION['status'] = ['type' => 'success', 'message' => 'File deleted successfully: ' . basename($fullPath)];
+    $_SESSION[$sessionKey] = ['type' => 'success', 'message' => 'File deleted successfully: ' . basename($fullPath)];
 } else {
-    $_SESSION['status'] = ['type' => 'error', 'message' => 'Failed to delete file. Check permissions.'];
+    $_SESSION[$sessionKey] = ['type' => 'error', 'message' => 'Failed to delete file. Check permissions.'];
 }
 
 header('Location: ' . $redirect);

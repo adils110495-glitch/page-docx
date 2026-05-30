@@ -702,6 +702,7 @@ if (file_exists($settingsFile)) {
             <a href="index.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;background:white;color:#667eea;border:2px solid white;">DOCX Generator</a>
             <a href="meta-extractor.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;color:rgba(255,255,255,0.8);background:rgba(255,255,255,0.15);border:2px solid transparent;">Meta Extractor</a>
             <a href="meta-tool/index.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;color:rgba(255,255,255,0.8);background:rgba(255,255,255,0.15);border:2px solid transparent;">Meta Translator</a>
+            <a href="lang-generator.php" style="padding:8px 20px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600;color:rgba(255,255,255,0.8);background:rgba(255,255,255,0.15);border:2px solid transparent;">Language Tab Generator</a>
         </div>
     </div>
 
@@ -745,6 +746,21 @@ if (file_exists($settingsFile)) {
             </div>
             <div class="directory-tree" id="directoryTree">
                 <?php
+                // Returns true if the folder has at least one regular (non-lang) DOCX or log file
+                function hasDocxFiles($dir) {
+                    if (!is_dir($dir)) return false;
+                    foreach (scandir($dir) as $file) {
+                        if ($file === '.' || $file === '..') continue;
+                        $path = $dir . '/' . $file;
+                        if (is_dir($path) && hasDocxFiles($path)) return true;
+                        if (!is_file($path)) continue;
+                        $ext = pathinfo($file, PATHINFO_EXTENSION);
+                        if ($ext === 'docx' && strpos($file, 'lang-') !== 0) return true;
+                        if ($ext === 'log' && $file !== 'lang-debug.log') return true;
+                    }
+                    return false;
+                }
+
                 function scanDirectory($dir, $baseDir, $hiddenProjects = []) {
                     if (!is_dir($dir)) {
                         echo '<div class="empty-directory">No files generated yet</div>';
@@ -761,6 +777,8 @@ if (file_exists($settingsFile)) {
                         $relativePath = str_replace($baseDir . '/', '', $fullPath);
 
                         if (is_dir($fullPath)) {
+                            // Skip folders that contain only lang-tab-generator files
+                            if (!hasDocxFiles($fullPath)) continue;
                             $hasContent = true;
                             $isHiddenAttr = in_array($item, $hiddenProjects) ? 'true' : 'false';
                             echo '<div class="directory-item folder" data-project="' . htmlspecialchars($item) . '" data-hidden="' . $isHiddenAttr . '">';
@@ -772,7 +790,7 @@ if (file_exists($settingsFile)) {
                             echo '<div class="folder-content" style="padding-left: 20px;">';
                             scanDirectory($fullPath, $baseDir, $hiddenProjects);
                             echo '</div>';
-                        } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'docx') {
+                        } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'docx' && strpos($item, 'lang-') !== 0) {
                             $hasContent = true;
                             echo '<div class="directory-item file">';
                             echo '<div class="file-info">';
@@ -784,7 +802,7 @@ if (file_exists($settingsFile)) {
                             echo '<a href="remove.php?file=' . urlencode('output/' . $relativePath) . '" onclick="return confirm(\'Delete this file?\')" class="file-action-btn btn-remove">Remove</a>';
                             echo '</div>';
                             echo '</div>';
-                        } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'log') {
+                        } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'log' && $item !== 'lang-debug.log') {
                             $hasContent = true;
                             echo '<div class="directory-item file log">';
                             echo '<div class="file-info">';
