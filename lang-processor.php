@@ -6,6 +6,11 @@ require_once 'vendor/autoload.php';
 use PhpOffice\PhpWord\PhpWord;
 use PhpOffice\PhpWord\IOFactory;
 
+// Base URL used to make anchor hrefs absolute in generated DOCX files
+if (!defined('LANG_DOCX_LINK_BASE_URL')) {
+    define('LANG_DOCX_LINK_BASE_URL', 'http://localhost:8085/');
+}
+
 // ─── Utility Functions ────────────────────────────────────────────────────────
 
 function langDebugLog($message) {
@@ -63,6 +68,24 @@ function langGetInnerHtml($node) {
     return $innerHTML;
 }
 
+/**
+ * Normalize a single selector entry
+ * Accepts a tag (article or <article>), a class (.my-class) or an ID (#my-id)
+ */
+function langNormalizeSelector($selector) {
+    $selector = trim(str_replace(['<', '>', '/'], '', trim($selector)));
+    if ($selector === '') return '';
+
+    $prefix = '';
+    if ($selector[0] === '#' || $selector[0] === '.') {
+        $prefix = $selector[0];
+        $selector = substr($selector, 1);
+    }
+
+    $selector = preg_replace('/[^a-zA-Z0-9_\-]/', '', $selector);
+    return $selector === '' ? '' : $prefix . $selector;
+}
+
 function langRemoveSkipSelectors($html, $skipSelectors) {
     if (empty($skipSelectors)) return $html;
     $dom = new DOMDocument();
@@ -70,7 +93,7 @@ function langRemoveSkipSelectors($html, $skipSelectors) {
     $dom->loadHTML(mb_convert_encoding($html, 'HTML-ENTITIES', 'UTF-8'));
     libxml_clear_errors();
     $xpath = new DOMXPath($dom);
-    $selectors = array_map('trim', explode(',', $skipSelectors));
+    $selectors = array_filter(array_map('langNormalizeSelector', explode(',', $skipSelectors)));
     foreach ($selectors as $selector) {
         if (empty($selector)) continue;
         $nodesToRemove = [];
@@ -107,8 +130,9 @@ function langExtractContent($html, $selector = null, $skipSelectors = '') {
     $metaTitle = langExtractMetaTitle($dom);
     $metaDescription = langExtractMetaDescription($dom);
     $contentHtml = '';
-    if ($selector && !empty(trim($selector))) {
-        $selector = trim($selector);
+    if ($selector && langNormalizeSelector($selector) !== '') {
+        // Accepts a tag (<article> or article), a class (.my-class) or an ID (#my-id)
+        $selector = langNormalizeSelector($selector);
         if (strpos($selector, '#') === 0) {
             $id = substr($selector, 1);
             $nodes = $xpath->query("//*[@id='$id']");
@@ -159,6 +183,33 @@ function langSanitizeText($text) {
     return trim($text);
 }
 
+/**
+ * Sanitize an inline text node, preserving the single leading/trailing space
+ * that separates it from neighbouring inline elements (e.g. links)
+ */
+/**
+ * Check whether the last text added to a run already ends with a space
+ * Prevents double spaces around inline elements such as links
+ */
+function langRunEndsWithSpace($textRun) {
+    $elements = $textRun->getElements();
+    if (empty($elements)) return false;
+
+    $last = end($elements);
+    if ($last instanceof \PhpOffice\PhpWord\Element\Text || $last instanceof \PhpOffice\PhpWord\Element\Link) {
+        return preg_match('/\s$/u', $last->getText()) === 1;
+    }
+    return true;
+}
+
+function langSanitizeInlineText($text) {
+    $leading  = preg_match('/^\s/u', $text) ? ' ' : '';
+    $trailing = preg_match('/\s$/u', $text) ? ' ' : '';
+    $clean    = langSanitizeText($text);
+    if ($clean === '') return '';
+    return $leading . $clean . $trailing;
+}
+
 function langGetTextContent($node) {
     $text = '';
     foreach ($node->childNodes as $child) {
@@ -178,6 +229,63 @@ function langGetTextContent($node) {
         }
     }
     return trim($text);
+}
+
+/**
+ * Resolve an anchor href into an absolute URL for DOCX hyperlinks
+ * Relative hrefs are resolved against http://localhost:8085/
+ * Returns null for links that should not become hyperlinks
+ */
+function langResolveLinkUrl($href) {
+    $href = trim(html_entity_decode((string) $href, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    $href = preg_replace('/[\x00-\x20\x7F]/', '', $href);
+
+    if ($href === '' || $href === '#') return null;
+    if (preg_match('/^(javascript|data|vbscript):/i', $href)) return null;
+    if (preg_match('/^[a-z][a-z0-9+.\-]*:/i', $href)) return $href;
+    if (strpos($href, '//') === 0) return 'http:' . $href;
+
+    return rtrim(LANG_DOCX_LINK_BASE_URL, '/') . '/' . ltrim($href, '/');
+}
+
+function langHasBlockChild($node) {
+    $blockElements = ['div','p','ul','ol','li','table','tr','td','th','h1','h2','h3','h4','h5','h6','blockquote','section','article','header','footer','nav','aside'];
+    foreach ($node->childNodes as $child) {
+        if ($child->nodeType === XML_ELEMENT_NODE && in_array(strtolower($child->nodeName), $blockElements)) return true;
+    }
+    return false;
+}
+
+function langContainsAnchor($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE && strtolower($node->nodeName) === 'a') return true;
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (langContainsAnchor($child)) return true;
+        }
+    }
+    return false;
+}
+
+function langNeedsInlineRun($node) {
+    return langContainsBrTag($node) || (langContainsAnchor($node) && !langHasBlockChild($node));
+}
+
+function langAddLinkToTextRun($textRun, $node, $fontStyle = []) {
+    $text = langSanitizeText(langGetTextContent($node));
+    if ($text === '') return;
+
+    $url = $node->hasAttribute('href') ? langResolveLinkUrl($node->getAttribute('href')) : null;
+    if ($url === null) {
+        $textRun->addText($text, $fontStyle);
+        return;
+    }
+
+    $linkStyle = array_merge($fontStyle, ['color' => '0563C1', 'underline' => 'single']);
+    try {
+        $textRun->addLink($url, $text, $linkStyle);
+    } catch (Exception $e) {
+        $textRun->addText($text, $fontStyle);
+    }
 }
 
 function langContainsBrTag($node) {
@@ -217,8 +325,15 @@ function langProcessInlineContent($textRun, $node, $fontStyle = []) {
     $blockElements = ['div','p','ul','ol','li','table','tr','td','th','h1','h2','h3','h4','h5','h6','blockquote','section','article','header','footer','nav','aside'];
     foreach ($node->childNodes as $child) {
         if ($child->nodeType === XML_TEXT_NODE) {
-            $text = langSanitizeText($child->nodeValue);
-            if (!empty($text)) $textRun->addText($text, $fontStyle);
+            $raw = $child->nodeValue;
+            if (trim($raw) === '') {
+                // Whitespace-only node between inline elements - keep one space
+                if ($raw !== '' && $textRun->countElements() > 0 && !langRunEndsWithSpace($textRun)) $textRun->addText(' ', $fontStyle);
+            } else {
+                $text = langSanitizeInlineText($raw);
+                if ($textRun->countElements() === 0 || langRunEndsWithSpace($textRun)) $text = ltrim($text);
+                if ($text !== '') $textRun->addText($text, $fontStyle);
+            }
         } elseif ($child->nodeType === XML_ELEMENT_NODE) {
             $nodeName = strtolower($child->nodeName);
             if (in_array($nodeName, $blockElements)) continue;
@@ -230,6 +345,8 @@ function langProcessInlineContent($textRun, $node, $fontStyle = []) {
                     langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['italic' => true])); break;
                 case 'u':
                     langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['underline' => 'single'])); break;
+                case 'a':
+                    langAddLinkToTextRun($textRun, $child, $fontStyle); break;
                 default:
                     langProcessInlineContent($textRun, $child, $fontStyle); break;
             }
@@ -239,7 +356,7 @@ function langProcessInlineContent($textRun, $node, $fontStyle = []) {
 
 function langAddElementContent($section, $node, $fontStyle = [], $paragraphStyle = []) {
     try {
-        if (langContainsBrTag($node)) {
+        if (langNeedsInlineRun($node)) {
             $textRun = $section->addTextRun($paragraphStyle);
             langProcessInlineContent($textRun, $node, $fontStyle);
         } else {
@@ -257,6 +374,13 @@ function langProcessListForDocx($section, $listNode, $listType) {
         if (strtolower($child->nodeName) === 'li') {
             if (langContainsHeading($child) || langContainsTitle1Class($child)) {
                 langProcessNodeForDocx($section, $child, null, 0);
+            } elseif (langContainsAnchor($child) && !langHasBlockChild($child)) {
+                $listItemRun = $section->addListItemRun(
+                    0,
+                    $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
+                    ['spaceAfter' => 120]
+                );
+                langProcessInlineContent($listItemRun, $child, ['size' => 11, 'name' => 'Arial']);
             } else {
                 $text = langGetTextContent($child);
                 if (!empty($text)) {
@@ -284,7 +408,7 @@ function langProcessTableRow($table, $rowNode, $isHeader = false) {
             $textStyle = ['size' => 10, 'name' => 'Arial', 'bold' => $isHeaderCell];
             $paragraphStyle = ['spaceAfter' => 0, 'spaceBefore' => 0];
             $cell = $table->addCell(null, $cellStyle);
-            if (langContainsBrTag($cellNode)) {
+            if (langNeedsInlineRun($cellNode)) {
                 $textRun = $cell->addTextRun($paragraphStyle);
                 langProcessInlineContent($textRun, $cellNode, $textStyle);
             } else {
@@ -376,7 +500,7 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                         break;
                     }
                     $size = $sizes[$nodeName];
-                    if (langContainsBrTag($child)) {
+                    if (langNeedsInlineRun($child)) {
                         langAddElementContent($section, $child, ['bold' => true, 'size' => $size, 'name' => 'Arial'], ['spaceAfter' => 240]);
                     } else {
                         $text = langGetTextContent($child);
@@ -387,7 +511,7 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     break;
 
                 case 'p':
-                    if (langContainsBrTag($child)) {
+                    if (langNeedsInlineRun($child)) {
                         langAddElementContent($section, $child, ['size' => 11, 'name' => 'Arial'], ['spaceAfter' => 200]);
                     } else {
                         $text = langGetTextContent($child);
@@ -405,6 +529,18 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                 case 'em': case 'i':
                     $text = langGetTextContent($child);
                     if (!empty($text) && $textRun) $textRun->addText(langSanitizeText($text), ['italic' => true]);
+                    break;
+
+                case 'a':
+                    if ($textRun) {
+                        langAddLinkToTextRun($textRun, $child);
+                    } else {
+                        $linkText = langGetTextContent($child);
+                        if (!empty($linkText)) {
+                            $linkRun = $section->addTextRun(['spaceAfter' => 200]);
+                            langAddLinkToTextRun($linkRun, $child, ['size' => 11, 'name' => 'Arial']);
+                        }
+                    }
                     break;
 
                 case 'ul': case 'ol':
@@ -512,8 +648,8 @@ function langUrlToSlug($url) {
 
 function detectLanguageCode($url, $validCodes) {
     $parsed = parse_url($url);
-    $path = isset($parsed['path']) ? $parsed['path'] : '';
-    $path = trim($path, '/');
+    $path   = isset($parsed['path']) ? $parsed['path'] : '';
+    $path   = trim($path, '/');
 
     if (!empty($path)) {
         $segments = array_values(array_filter(explode('/', $path), function($s) { return $s !== ''; }));
@@ -521,22 +657,19 @@ function detectLanguageCode($url, $validCodes) {
         if (!empty($segments)) {
             $first = strtolower($segments[0]);
 
-            // 2-letter ISO 639-1
-            if (preg_match('/^[a-z]{2}$/', $first) && in_array($first, $validCodes)) {
+            // Any 2-letter code (language or region, e.g. gb, fr, de, us)
+            if (preg_match('/^[a-z]{2}$/', $first)) {
                 return $first;
             }
 
-            // Locale: en-us, pt-br, zh-cn, en-GB, etc.
-            if (preg_match('/^([a-z]{2})[-_]([a-z]{2,4})$/i', $first, $matches)) {
-                $base = strtolower($matches[1]);
-                if (in_array($base, $validCodes)) {
-                    return strtolower($first);
-                }
+            // Locale code: en-us, pt-br, zh-cn, en-gb, etc.
+            if (preg_match('/^[a-z]{2}[-_][a-z]{2,4}$/i', $first)) {
+                return strtolower(str_replace('_', '-', $first));
             }
         }
     }
 
-    return 'en'; // default to English when no language code detected in URL
+    return 'en';
 }
 
 // ─── Combined DOCX Generator ──────────────────────────────────────────────────
@@ -759,15 +892,81 @@ function langBuildDocName($urls, $validCodes) {
     return $slug ?: 'lang-combined-' . date('Y-m-d_H-i-s');
 }
 
-$docName = 'lang-' . langBuildDocName($urls, $ISO_LANG_CODES);
+$docName     = 'lang-' . langBuildDocName($urls, $ISO_LANG_CODES);
+$outputMode  = isset($_POST['output_mode']) && $_POST['output_mode'] === 'google_drive' ? 'google_drive' : 'docx';
+$langList    = implode(', ', array_map('strtoupper', array_filter(array_keys($languageGroups), function($k) { return $k !== '__other__'; })));
 
-langDebugLog("Detected {$langCount} language(s), {$totalUrls} total URLs");
+langDebugLog("Detected {$langCount} language(s), {$totalUrls} total URLs | mode: {$outputMode}");
 
+// ── Helper: read a key from root .env ─────────────────────────────────────
+function langReadEnv(string $key): string {
+    $file = __DIR__ . '/.env';
+    if (!file_exists($file)) return '';
+    foreach (file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if ($line === '' || $line[0] === '#') continue;
+        [$k, $v] = array_pad(explode('=', $line, 2), 2, '');
+        if (trim($k) === $key) return trim($v);
+    }
+    return '';
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PATH A — Save to Google Drive
+// ══════════════════════════════════════════════════════════════════════════
+if ($outputMode === 'google_drive') {
+    try {
+        if (!class_exists('App\GoogleAuthHelper')) {
+            throw new RuntimeException('Google API client not installed. Run: composer install');
+        }
+
+        $googleAuth = new \App\GoogleAuthHelper();
+        if (!$googleAuth->isAuthenticated()) {
+            throw new RuntimeException('Google account not connected. Please authenticate first.');
+        }
+
+        $googleClient = $googleAuth->createClient();
+
+        $rawTitle = isset($_POST['google_doc_title']) ? trim($_POST['google_doc_title']) : '';
+        $docTitle = $rawTitle !== '' ? $rawTitle : ltrim($docName, 'lang-');
+        $folderId = langReadEnv('GOOGLE_DRIVE_FOLDER_ID');
+
+        $exporter = new \App\GoogleDocsExporter($googleClient);
+        $result   = $exporter->export($languageGroups, $docTitle, $selector, $skipSels, $folderId);
+
+        langDebugLog("Google Doc created: " . $result['url']);
+
+        $tabCount = count($result['langs']);
+        $msg = "Google Doc created with {$tabCount} language tab(s)" . ($langList ? " ({$langList})" : '') . " — {$totalUrls} URL(s) processed.";
+
+        $_SESSION['lang_status'] = [
+            'type'              => 'success',
+            'message'           => $msg,
+            'processed'         => $totalUrls,
+            'total'             => $totalUrls,
+            'google_doc_url'    => $result['url'],
+            'google_folder_url' => $result['folderUrl'],
+        ];
+
+    } catch (Exception $e) {
+        langDebugLog("Google Drive ERROR: " . $e->getMessage());
+        $_SESSION['lang_status'] = [
+            'type'             => 'error',
+            'message'          => 'Google Drive export failed: ' . $e->getMessage(),
+            'google_docs_error'=> $e->getMessage(),
+        ];
+    }
+
+    header('Location: lang-generator.php');
+    exit;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PATH B — Save as DOCX (default)
+// ══════════════════════════════════════════════════════════════════════════
 try {
     $filepath = generateLangDocx($languageGroups, $docName, $project, $selector, $skipSels, $langNames);
     langDebugLog("Combined DOCX saved: {$filepath}");
 
-    $langList = implode(', ', array_map('strtoupper', array_filter(array_keys($languageGroups), function($k) { return $k !== '__other__'; })));
     $msg = "Generated combined document for {$langCount} language(s)" . ($langList ? " ({$langList})" : '') . " — {$totalUrls} URL(s) processed.";
 
     $_SESSION['lang_status'] = [

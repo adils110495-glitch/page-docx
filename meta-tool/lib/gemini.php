@@ -7,41 +7,63 @@ function gemini_rewrite(
     string $target_language,
     string $field_type,
     string $deepl_ref = '',
-    string $exclude   = ''    // when set, the output must differ from this text
+    string $exclude   = '',   // when set, the output must differ from this text
+    string $feedback  = ''    // e.g. "previous was 53 chars, too long by 7"
 ): ?string {
     $api_key = getenv('GEMINI_API_KEY');
     if (!$api_key) return null;
 
     [$min, $max] = $field_type === 'title' ? [40, 46] : [150, 155];
 
-    $ref_block     = $deepl_ref !== ''
-        ? "\nDeepL translation (vocabulary reference only — do NOT copy if it changes meaning):\n{$deepl_ref}\n"
+    $ref_block      = $deepl_ref !== ''
+        ? "\nReference translation (vocabulary only):\n{$deepl_ref}\n"
         : '';
-    $exclude_block = $exclude !== ''
-        ? "\nDo NOT reproduce this exact phrasing (generate a different wording):\n{$exclude}\n"
+    $exclude_block  = $exclude !== ''
+        ? "\nDo NOT reproduce this exact phrasing (generate different wording):\n{$exclude}\n"
+        : '';
+    $feedback_block = $feedback !== ''
+        ? "\nPREVIOUS ATTEMPT FAILED: {$feedback} — adjust your output accordingly.\n"
         : '';
 
     $prompt = <<<PROMPT
-You are an SEO localisation expert. Write a {$field_type} in {$target_language}.
+You are an SEO localisation expert. You MUST follow the checklist below without exception.
 
-PRIORITY 1 — EXACT MEANING (NON-NEGOTIABLE):
-- Express the IDENTICAL meaning as the Original English below
-- Same topic, intent, key facts, numbers, and entities (brand names, prices, locations)
-- Do NOT add information not present in the original
-- Do NOT remove any key concept from the original
-- Do NOT change informational text to promotional or vice versa
+═══════════════════════════════════════
+SEO META {$field_type} CHECKLIST
+═══════════════════════════════════════
 
-PRIORITY 2 — CHARACTER COUNT (MANDATORY):
-- The result MUST be between {$min} and {$max} characters — count every character carefully
-- Expand or condense phrasing to hit the range; never sacrifice meaning to do so
+CHECKLIST ITEM 1 — LANGUAGE (MANDATORY)
+✔ Output must be written entirely in {$target_language}.
+✔ Any English in your output = automatic failure. Rewrite in {$target_language}.
 
-PRIORITY 3 — SEO QUALITY:
-- Natural, fluent, and search-optimised in {$target_language}
+CHECKLIST ITEM 2 — CHARACTER COUNT (MANDATORY, HIGHEST PRIORITY)
+✔ Total character count MUST be between {$min} and {$max} (inclusive).
+✔ Count every character: letters, spaces, punctuation, numbers, symbols.
+✔ If your draft has more than {$max} chars → remove words until it fits.
+✔ If your draft has fewer than {$min} chars → add words until it fits.
+✔ Do NOT output until character count is confirmed within {$min}–{$max}.
+{$feedback_block}
+CHECKLIST ITEM 3 — MEANING (REQUIRED)
+✔ Cover the same main topic and intent as the Original English below.
+✔ Keep key entities (brand name, numbers, locations) where length permits.
+✔ Rephrase, condense, or adapt freely — word-for-word translation is NOT required.
+✔ The character count limit overrides preserving minor details.
 
+CHECKLIST ITEM 4 — SEO QUALITY (REQUIRED)
+✔ Natural, fluent language that reads well in {$target_language}.
+✔ Search-optimised: use keywords a user would type to find this content.
+
+═══════════════════════════════════════
 Original English:
 {$original_english}
 {$ref_block}{$exclude_block}
-OUTPUT: Return ONLY the final text. No quotes, labels, or explanation.
+SELF-CHECK BEFORE OUTPUT:
+→ Is it in {$target_language}? (yes/no — if no, rewrite)
+→ Character count between {$min} and {$max}? (yes/no — if no, rewrite)
+→ Covers the main topic? (yes/no — if no, rewrite)
+Only output when all three answers are YES.
+
+OUTPUT: Return ONLY the final {$target_language} text. No counts, no labels, no explanation.
 PROMPT;
 
     $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' . $api_key;
@@ -64,7 +86,6 @@ PROMPT;
     ]);
 
     $response = curl_exec($ch);
-    curl_close($ch);
 
     if (!$response) return null;
 
@@ -91,7 +112,7 @@ Original (English):
 Rewritten ({$target_language}):
 {$rewritten}
 
-Does the rewritten text express the EXACT same meaning, intent, and key information as the original English?
+Does the rewritten text cover the same main topic and intent as the original English (even if phrased differently or condensed for SEO)?
 Answer ONLY: YES or NO
 PROMPT;
 
@@ -112,7 +133,6 @@ PROMPT;
     ]);
 
     $response = curl_exec($ch);
-    curl_close($ch);
 
     if (!$response) return true;
 

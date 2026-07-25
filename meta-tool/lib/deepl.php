@@ -30,7 +30,6 @@ function deepl_translate(string $text, string $target_lang): ?string
     ]);
 
     $response = curl_exec($ch);
-    curl_close($ch);
 
     if (!$response) return null;
 

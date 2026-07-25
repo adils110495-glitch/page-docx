@@ -6,6 +6,11 @@ use PhpOffice\PhpWord\PhpWord;
 use PhpOffice\PhpWord\IOFactory;
 use PhpOffice\PhpWord\Shared\Html;
 
+// Base URL used to make anchor hrefs absolute in generated DOCX files
+if (!defined('DOCX_LINK_BASE_URL')) {
+    define('DOCX_LINK_BASE_URL', 'http://localhost:8085/');
+}
+
 /**
  * Generate slug from URL for filename
  * Uses the full URL path joined with dashes
@@ -100,6 +105,33 @@ function extractMetaDescription($dom) {
 }
 
 /**
+ * Normalize a single selector entry
+ * Accepts a tag (article or <article>), a class (.my-class) or an ID (#my-id)
+ * Returns the selector with its prefix kept and unsafe characters stripped
+ */
+function normalizeSelector($selector) {
+    $selector = trim($selector);
+
+    // Allow tags written with angle brackets, e.g. <article> or </article>
+    $selector = trim(str_replace(['<', '>', '/'], '', $selector));
+
+    if ($selector === '') {
+        return '';
+    }
+
+    $prefix = '';
+    if ($selector[0] === '#' || $selector[0] === '.') {
+        $prefix = $selector[0];
+        $selector = substr($selector, 1);
+    }
+
+    // Keep only characters that are valid in tag names, class names and IDs
+    $selector = preg_replace('/[^a-zA-Z0-9_\-]/', '', $selector);
+
+    return $selector === '' ? '' : $prefix . $selector;
+}
+
+/**
  * Remove elements matching skip selectors from HTML
  */
 function removeSkipSelectors($html, $skipSelectors) {
@@ -116,7 +148,8 @@ function removeSkipSelectors($html, $skipSelectors) {
     $xpath = new DOMXPath($dom);
 
     // Parse skip selectors (comma-separated)
-    $selectors = array_map('trim', explode(',', $skipSelectors));
+    // Each entry can be a tag (<article> or article), a class (.my-class) or an ID (#my-id)
+    $selectors = array_filter(array_map('normalizeSelector', explode(',', $skipSelectors)));
     debugLog("[SKIP] Processing skip selectors: " . implode(', ', $selectors));
 
     foreach ($selectors as $selector) {
@@ -210,8 +243,10 @@ function extractContent($html, $selector = null, $skipSelectors = '') {
     // Extract content based on selector
     $contentHtml = '';
 
-    if ($selector && !empty(trim($selector))) {
-        $selector = trim($selector);
+    if ($selector && normalizeSelector($selector) !== '') {
+        // Accepts a tag (<article> or article), a class (.my-class) or an ID (#my-id)
+        $selector = normalizeSelector($selector);
+        debugLog("  Using selector: {$selector}");
 
         if (strpos($selector, '#') === 0) {
             // ID selector (e.g., #content)
@@ -374,9 +409,9 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                         $size = 13; // Make FAQ questions more prominent
                     }
 
-                    // Check if heading contains <br> tags
-                    if (containsBrTag($child)) {
-                        debugLog("  Adding heading {$nodeName} with line breaks");
+                    // Check if heading contains <br> tags or anchors
+                    if (needsInlineRun($child)) {
+                        debugLog("  Adding heading {$nodeName} with line breaks/links");
                         addElementContent(
                             $section,
                             $child,
@@ -400,9 +435,9 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     break;
 
                 case 'p':
-                    // Check if paragraph contains <br> tags
-                    if (containsBrTag($child)) {
-                        // Use TextRun to handle line breaks properly
+                    // Check if paragraph contains <br> tags or anchors
+                    if (needsInlineRun($child)) {
+                        // Use TextRun to handle line breaks and hyperlinks properly
                         addElementContent(
                             $section,
                             $child,
@@ -435,6 +470,19 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     $text = getTextContent($child);
                     if (!empty($text) && $textRun) {
                         $textRun->addText(sanitizeTextForDocx($text), ['italic' => true]);
+                    }
+                    break;
+
+                case 'a':
+                    // Standalone anchor - render as hyperlink
+                    if ($textRun) {
+                        addLinkToTextRun($textRun, $child);
+                    } else {
+                        $linkText = getTextContent($child);
+                        if (!empty($linkText)) {
+                            $linkRun = $section->addTextRun(['spaceAfter' => 200]);
+                            addLinkToTextRun($linkRun, $child, ['size' => 11, 'name' => 'Arial']);
+                        }
                     }
                     break;
 
@@ -543,6 +591,14 @@ function processListForDocx($section, $listNode, $listType) {
             if ($hasHeading || $hasTitle1) {
                 debugLog("  [LIST] LI contains headings/title1, processing recursively");
                 processNodeForDocx($section, $child, null, 0);
+            } elseif (containsAnchor($child) && !hasBlockChild($child)) {
+                // List item with links - use a list item run so hyperlinks are preserved
+                $listItemRun = $section->addListItemRun(
+                    $depth,
+                    $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
+                    ['spaceAfter' => 120]
+                );
+                processInlineContent($listItemRun, $child, ['size' => 11, 'name' => 'Arial']);
             } else {
                 // Regular list item - extract text
                 $text = getTextContent($child);
@@ -698,9 +754,9 @@ function processTableRow($table, $rowNode, $isHeader = false) {
 
             $cell = $table->addCell(null, $cellStyle);
 
-            // Check if cell contains <br> tags
-            if (containsBrTag($cellNode)) {
-                // Use TextRun to handle line breaks properly
+            // Check if cell contains <br> tags or anchors
+            if (needsInlineRun($cellNode)) {
+                // Use TextRun to handle line breaks and hyperlinks properly
                 $textRun = $cell->addTextRun($paragraphStyle);
                 processInlineContent($textRun, $cellNode, $textStyle);
             } else {
@@ -742,6 +798,22 @@ function sanitizeTextForDocx($text) {
 }
 
 /**
+ * Sanitize an inline text node for DOCX, preserving the single leading/trailing
+ * space that separates it from neighbouring inline elements (e.g. links)
+ */
+function sanitizeInlineTextForDocx($text) {
+    $leading = preg_match('/^\s/u', $text) ? ' ' : '';
+    $trailing = preg_match('/\s$/u', $text) ? ' ' : '';
+    $clean = sanitizeTextForDocx($text);
+
+    if ($clean === '') {
+        return '';
+    }
+
+    return $leading . $clean . $trailing;
+}
+
+/**
  * Normalize Cyrillic lookalike characters to their Latin equivalents
  * Some websites use mixed character sets which can cause DOCX corruption
  */
@@ -775,6 +847,101 @@ function normalizeCyrillicToLatin($text) {
     ];
 
     return strtr($text, $cyrillicToLatin);
+}
+
+/**
+ * Resolve an anchor href into an absolute URL for DOCX hyperlinks
+ * Relative hrefs are resolved against DOCX_LINK_BASE_URL (http://localhost:8085/)
+ * Returns null for links that should not become hyperlinks
+ */
+function resolveLinkUrlForDocx($href) {
+    $href = trim(html_entity_decode((string) $href, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    // Strip characters that are invalid inside DOCX relationship targets
+    $href = preg_replace('/[\x00-\x20\x7F]/', '', $href);
+
+    if ($href === '' || $href === '#') {
+        return null;
+    }
+
+    // Ignore non-navigational links
+    if (preg_match('/^(javascript|data|vbscript):/i', $href)) {
+        return null;
+    }
+
+    // Already absolute (http:, https:, mailto:, tel:, ...)
+    if (preg_match('/^[a-z][a-z0-9+.\-]*:/i', $href)) {
+        return $href;
+    }
+
+    // Protocol-relative URL
+    if (strpos($href, '//') === 0) {
+        return 'http:' . $href;
+    }
+
+    // Relative / root-relative / fragment - resolve against the base URL
+    return rtrim(DOCX_LINK_BASE_URL, '/') . '/' . ltrim($href, '/');
+}
+
+/**
+ * Check if a node has block-level children (inline processing would drop them)
+ */
+function hasBlockChild($node) {
+    $blockElements = ['div', 'p', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'section', 'article', 'header', 'footer', 'nav', 'aside'];
+    foreach ($node->childNodes as $child) {
+        if ($child->nodeType === XML_ELEMENT_NODE && in_array(strtolower($child->nodeName), $blockElements)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Check if a node contains an anchor (<a>) element at any depth
+ */
+function containsAnchor($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE && strtolower($node->nodeName) === 'a') {
+        return true;
+    }
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (containsAnchor($child)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Decide whether an element should be rendered through a TextRun
+ * (needed for <br> line breaks and for anchors to stay clickable)
+ */
+function needsInlineRun($node) {
+    return containsBrTag($node) || (containsAnchor($node) && !hasBlockChild($node));
+}
+
+/**
+ * Add an anchor element to a TextRun as a real DOCX hyperlink
+ * Falls back to plain text when the href is not usable
+ */
+function addLinkToTextRun($textRun, $node, $fontStyle = []) {
+    $text = sanitizeTextForDocx(getTextContent($node));
+    if ($text === '') {
+        return;
+    }
+
+    $url = $node->hasAttribute('href') ? resolveLinkUrlForDocx($node->getAttribute('href')) : null;
+    if ($url === null) {
+        $textRun->addText($text, $fontStyle);
+        return;
+    }
+
+    $linkStyle = array_merge($fontStyle, ['color' => '0563C1', 'underline' => 'single']);
+    try {
+        $textRun->addLink($url, $text, $linkStyle);
+    } catch (Exception $e) {
+        $textRun->addText($text, $fontStyle);
+    }
 }
 
 /**
@@ -849,6 +1016,25 @@ function addTextWithLineBreaks($section, $text, $fontStyle = [], $paragraphStyle
 }
 
 /**
+ * Check whether the last piece of text already added to a run ends with a space
+ * Prevents double spaces around inline elements such as links
+ */
+function runEndsWithSpace($textRun) {
+    $elements = $textRun->getElements();
+    if (empty($elements)) {
+        return false;
+    }
+
+    $last = end($elements);
+    if ($last instanceof \PhpOffice\PhpWord\Element\Text || $last instanceof \PhpOffice\PhpWord\Element\Link) {
+        return preg_match('/\s$/u', $last->getText()) === 1;
+    }
+
+    // Line breaks and other elements need no extra spacing
+    return true;
+}
+
+/**
  * Process inline content of an element, handling <br> tags and inline formatting
  * This renders content directly to a TextRun, preserving <br> as line breaks
  */
@@ -858,11 +1044,21 @@ function processInlineContent($textRun, $node, $fontStyle = []) {
 
     foreach ($node->childNodes as $child) {
         if ($child->nodeType === XML_TEXT_NODE) {
-            $text = $child->nodeValue;
-            if (!empty(trim($text))) {
+            $raw = $child->nodeValue;
+            if (trim($raw) === '') {
+                // Whitespace-only node between inline elements (e.g. "</a> word")
+                // Keep a single space so words don't run together
+                if ($raw !== '' && $textRun->countElements() > 0 && !runEndsWithSpace($textRun)) {
+                    $textRun->addText(' ', $fontStyle);
+                }
+            } else {
                 // Sanitize text (handles entities, Cyrillic, ampersands, etc.)
-                $text = sanitizeTextForDocx($text);
-                if (!empty($text)) {
+                // but keep the surrounding spaces that separate it from siblings
+                $text = sanitizeInlineTextForDocx($raw);
+                if ($textRun->countElements() === 0 || runEndsWithSpace($textRun)) {
+                    $text = ltrim($text);
+                }
+                if ($text !== '') {
                     $textRun->addText($text, $fontStyle);
                 }
             }
@@ -893,8 +1089,8 @@ function processInlineContent($textRun, $node, $fontStyle = []) {
                     processInlineContent($textRun, $child, $underlineStyle);
                     break;
                 case 'a':
-                    // Handle links - just extract text
-                    processInlineContent($textRun, $child, $fontStyle);
+                    // Handle links - keep them as real hyperlinks
+                    addLinkToTextRun($textRun, $child, $fontStyle);
                     break;
                 case 'span':
                 case 'sup':
@@ -913,9 +1109,9 @@ function processInlineContent($textRun, $node, $fontStyle = []) {
  */
 function addElementContent($section, $node, $fontStyle = [], $paragraphStyle = []) {
     try {
-        // Check if element contains <br> tags
-        if (containsBrTag($node)) {
-            // Use TextRun to handle inline content with <br>
+        // Check if element contains <br> tags or anchors
+        if (needsInlineRun($node)) {
+            // Use TextRun to handle inline content with <br> and hyperlinks
             $textRun = $section->addTextRun($paragraphStyle);
             processInlineContent($textRun, $node, $fontStyle);
         } else {

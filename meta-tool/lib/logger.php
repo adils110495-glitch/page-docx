@@ -10,7 +10,7 @@ function init_log(string $log_file): void
     if (!file_exists($log_file)) {
         file_put_contents(
             $log_file,
-            "timestamp | original | deepl | gemini | groq | final | attempts | status\n"
+            "timestamp | original | deepl | openai | gemini | groq | final | attempts | status\n"
         );
     }
 }
@@ -21,6 +21,7 @@ function log_row(array $data, string $log_file): void
         date('Y-m-d H:i:s'),
         $data['original']  ?? '-',
         $data['deepl']     ?? '-',
+        $data['openai']    ?? '-',
         $data['gemini']    ?? '-',
         $data['groq']      ?? '-',
         $data['final']     ?? '-',

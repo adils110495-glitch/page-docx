@@ -7,6 +7,35 @@ if (file_exists($settingsFile)) {
     $settings = json_decode(file_get_contents($settingsFile), true) ?? [];
     $hiddenProjects = $settings['hidden_projects'] ?? [];
 }
+
+// Read a single key from the root .env file
+function readEnvKey(string $key): string {
+    $file = __DIR__ . '/.env';
+    if (!file_exists($file)) return '';
+    foreach (file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if ($line === '' || $line[0] === '#') continue;
+        [$k, $v] = array_pad(explode('=', $line, 2), 2, '');
+        if (trim($k) === $key) return trim($v);
+    }
+    return '';
+}
+
+// Google Docs auth status
+$googleAuthenticated  = false;
+$googleHasCredentials = false;
+$googleDriveFolderId  = readEnvKey('GOOGLE_DRIVE_FOLDER_ID');
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+    if (class_exists('App\GoogleAuthHelper')) {
+        try {
+            $googleAuth           = new \App\GoogleAuthHelper();
+            $googleHasCredentials = $googleAuth->hasCredentials();
+            $googleAuthenticated  = $googleAuth->isAuthenticated();
+        } catch (\Exception $e) {
+            // Google SDK not ready
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -452,6 +481,123 @@ if (file_exists($settingsFile)) {
             .main-container { grid-template-columns: 1fr; height: auto; }
             .sidebar { max-height: 300px; }
         }
+
+        /* ── Output Destination Toggle ───────────────────────────────── */
+        .output-dest-section {
+            margin-bottom: 20px;
+            flex-shrink: 0;
+        }
+
+        .output-dest-section > label {
+            display: block;
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+
+        .dest-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .dest-option {
+            flex: 1;
+            position: relative;
+        }
+
+        .dest-option input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .dest-option label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: #555;
+            background: #fafafa;
+            transition: all 0.2s;
+            margin-bottom: 0;
+            user-select: none;
+        }
+
+        .dest-option input[type="radio"]:checked + label {
+            border-color: #667eea;
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            color: #667eea;
+        }
+
+        .dest-option label:hover {
+            border-color: #aaa;
+            background: #f5f5f5;
+        }
+
+        .dest-option input[type="radio"]:checked + label:hover {
+            background: linear-gradient(135deg, #667eea20 0%, #764ba220 100%);
+        }
+
+        .dest-icon { font-size: 18px; line-height: 1; }
+
+        /* Google auth badge (used inside the gdrive panel) */
+        .google-auth-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .google-auth-badge.connected    { background: #e6f4ea; color: #1e8e3e; border: 1px solid #c3e6cb; }
+        .google-auth-badge.disconnected { background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c5; }
+        .google-auth-badge.no-creds     { background: #fef7e0; color: #e37400; border: 1px solid #f8dda0; }
+
+        .google-auth-badge .badge-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+        .google-auth-badge.connected .badge-dot    { background: #1e8e3e; }
+        .google-auth-badge.disconnected .badge-dot { background: #c5221f; }
+        .google-auth-badge.no-creds .badge-dot     { background: #e37400; }
+
+        .google-auth-link { font-size: 12px; color: #1a73e8; text-decoration: none; font-weight: 500; }
+        .google-auth-link:hover { text-decoration: underline; }
+
+        .google-docs-notice {
+            font-size: 12px; color: #666; line-height: 1.4;
+            padding: 8px 10px; background: #fff3cd;
+            border-radius: 5px; border-left: 3px solid #e37400;
+            margin-top: 8px;
+        }
+
+        .gdrive-panel { display: none; }
+        .gdrive-panel.active { display: block; }
+
+        .gdrive-dest-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f0f4ff;
+            border-radius: 6px;
+            border: 1px solid #dde1ff;
+            font-size: 12px;
+            color: #444;
+            margin-top: 10px;
+        }
+
+        .gdrive-dest-info .dest-folder-icon { font-size: 16px; }
+        .gdrive-dest-info a { color: #1a73e8; text-decoration: none; font-weight: 500; }
+        .gdrive-dest-info a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -503,7 +649,7 @@ if (file_exists($settingsFile)) {
             </div>
             <div class="directory-tree" id="directoryTree">
                 <?php
-                function scanDirectory($dir, $baseDir, $hiddenProjects = []) {
+                function scanDirectory(string $dir, string $baseDir, array $hiddenProjects = []): void {
                     if (!is_dir($dir)) {
                         echo '<div class="empty-directory">No language documents generated yet</div>';
                         return;
@@ -555,7 +701,7 @@ if (file_exists($settingsFile)) {
                     }
                 }
 
-                function countLangFiles($dir) {
+                function countLangFiles(string $dir): bool {
                     foreach (scandir($dir) as $item) {
                         if ($item === '.' || $item === '..') continue;
                         $path = $dir . '/' . $item;
@@ -651,18 +797,105 @@ if (file_exists($settingsFile)) {
                     <div id="langTabsContents"></div>
                 </div>
 
-                <!-- CSS Selector -->
+                <!-- Selected Selector -->
                 <div class="form-group">
-                    <label for="selector">CSS Selector (Optional)</label>
-                    <input type="text" name="selector" id="selector" placeholder="your_right_contents" />
-                    <div class="help-text">Tag name, class, or ID to extract (e.g. "main", ".content", "#article"). Leave empty for full body.</div>
+                    <label for="selector">Selected Selector (Optional)</label>
+                    <input type="text" name="selector" id="selector" placeholder="&lt;article&gt; or .my-class or #my-id" />
+                    <div class="help-text">Any tag (&lt;article&gt;, &lt;main&gt;, or just "article"), a class with a dot (.my-class) or an ID with a hash (#my-id). Leave empty for full body.</div>
                 </div>
 
                 <!-- Skip Selectors -->
                 <div class="form-group">
                     <label for="skip_selectors">Skip Selectors (Optional)</label>
-                    <input type="text" name="skip_selectors" id="skip_selectors" placeholder="header, footer, nav, sidebar" />
-                    <div class="help-text">Comma-separated selectors to exclude from content.</div>
+                    <input type="text" name="skip_selectors" id="skip_selectors" placeholder="&lt;header&gt;, .my-class, #my-id" />
+                    <div class="help-text">Comma-separated list to exclude — any tag (&lt;header&gt;, &lt;nav&gt;), a class (.my-class) or an ID (#my-id).</div>
+                </div>
+
+                <!-- ── Output Destination ─────────────────────────────────── -->
+                <div class="form-group output-dest-section">
+                    <label>Save Output To</label>
+
+                    <div class="dest-toggle">
+                        <!-- DOCX option (always available) -->
+                        <div class="dest-option">
+                            <input type="radio" name="output_mode" id="modeDOCX" value="docx" checked
+                                   onchange="onOutputModeChange()">
+                            <label for="modeDOCX">
+                                <span class="dest-icon">📄</span> Save as DOCX
+                            </label>
+                        </div>
+
+                        <!-- Google Sheets option — disabled only if credentials file is missing -->
+                        <div class="dest-option">
+                            <input type="radio" name="output_mode" id="modeGDrive" value="google_drive"
+                                   <?php echo !$googleHasCredentials ? 'disabled' : ''; ?>
+                                   onchange="onOutputModeChange()">
+                            <label for="modeGDrive" style="<?php echo !$googleHasCredentials ? 'opacity:0.5;cursor:not-allowed;' : ''; ?>">
+                                <span class="dest-icon">📄</span> Save to Google Docs
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Google Drive details panel (shown when Google Drive is selected) -->
+                    <div class="gdrive-panel" id="gdrivePanel">
+
+                        <?php if (!$googleHasCredentials): ?>
+                            <div class="google-docs-notice">
+                                To enable Google Drive, place <strong>google-credentials.json</strong> in
+                                the app root. <a href="https://console.cloud.google.com/" target="_blank"
+                                class="google-auth-link">Open Google Cloud Console →</a>
+                            </div>
+
+                        <?php elseif (!$googleAuthenticated): ?>
+                            <!-- Credentials exist but not yet connected — show Connect button -->
+                            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                                <div class="google-auth-badge disconnected">
+                                    <span class="badge-dot"></span> Not connected
+                                </div>
+                                <a href="google-auth.php" class="google-auth-link"
+                                   style="padding:6px 14px;background:#1a73e8;color:#fff;border-radius:5px;font-size:12px;font-weight:600;text-decoration:none;">
+                                    Connect Google Account →
+                                </a>
+                            </div>
+                            <div class="google-docs-notice">
+                                Click <strong>Connect Google Account</strong> to authorise access.
+                                You'll be redirected back here automatically.
+                            </div>
+
+                        <?php else: ?>
+                            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                                <div class="google-auth-badge connected">
+                                    <span class="badge-dot"></span> Connected
+                                </div>
+                                <a href="google-auth.php?action=revoke" class="google-auth-link"
+                                   onclick="return confirm('Disconnect Google account?')">Disconnect</a>
+                            </div>
+
+                            <label for="google_doc_title">Document Title (Optional)</label>
+                            <input type="text" name="google_doc_title" id="google_doc_title"
+                                   placeholder="Leave empty to use the auto-generated filename" />
+
+                            <!-- Destination folder (read from .env — not editable here) -->
+                            <div class="gdrive-dest-info">
+                                <span class="dest-folder-icon">📁</span>
+                                <?php if ($googleDriveFolderId !== ''): ?>
+                                    Saves to:&nbsp;
+                                    <a href="https://drive.google.com/drive/folders/<?php echo htmlspecialchars($googleDriveFolderId); ?>"
+                                       target="_blank">Open destination folder →</a>
+                                    &nbsp;<span style="color:#aaa;font-size:11px;">(ID: <?php echo htmlspecialchars($googleDriveFolderId); ?>)</span>
+                                <?php else: ?>
+                                    Saves to: <strong>My Drive</strong> (root)
+                                    &nbsp;<span style="color:#aaa;font-size:11px;">Set <code>GOOGLE_DRIVE_FOLDER_ID</code> in <code>.env</code> to change</span>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="help-text" style="margin-top:8px;">
+                                One Google Document is created with one tab per detected language.
+                                A direct link appears when generation completes.
+                            </div>
+                        <?php endif; ?>
+
+                    </div><!-- /gdrivePanel -->
                 </div>
 
                 <div class="button-group">
@@ -681,6 +914,15 @@ if (file_exists($settingsFile)) {
                 }
                 if (isset($status['log_file'])) {
                     echo ' data-log-file="' . htmlspecialchars($status['log_file']) . '"';
+                }
+                if (isset($status['google_docs'])) {
+                    echo ' data-google-docs="' . htmlspecialchars(json_encode($status['google_docs'])) . '"';
+                }
+                if (isset($status['google_folder_url'])) {
+                    echo ' data-google-folder-url="' . htmlspecialchars($status['google_folder_url']) . '"';
+                }
+                if (isset($status['google_docs_error'])) {
+                    echo ' data-google-docs-error="' . htmlspecialchars($status['google_docs_error']) . '"';
                 }
                 echo '></div>';
                 unset($_SESSION['lang_status']);
@@ -730,28 +972,26 @@ if (file_exists($settingsFile)) {
                 if (parts.length) {
                     const first = parts[0].toLowerCase();
 
-                    // 2-letter ISO 639-1 code
-                    if (/^[a-z]{2}$/.test(first) && ISO_LANG_CODES.includes(first)) {
+                    // Any 2-letter code (language OR region, e.g. gb, fr, de, us)
+                    if (/^[a-z]{2}$/.test(first)) {
                         return first;
                     }
 
                     // Locale code: en-us, pt-br, zh-cn, en-gb, etc.
                     if (/^[a-z]{2}[-_][a-z]{2,4}$/i.test(first)) {
-                        const base = first.split(/[-_]/)[0].toLowerCase();
-                        if (ISO_LANG_CODES.includes(base)) {
-                            return first.toLowerCase().replace('_', '-');
-                        }
+                        return first.toLowerCase().replace('_', '-');
                     }
                 }
             } catch(e) {}
-            return 'en'; // default to English when no language code detected
+            return 'en';
         }
 
         function getLangLabel(code) {
+            if (code === 'default') return 'Default';
             const base = code.split('-')[0];
             const name = LANG_NAMES[base] || LANG_NAMES[code];
             if (name) return code.toUpperCase() + ' · ' + name;
-            return code.toUpperCase();
+            return code.toUpperCase(); // e.g. GB, US — show as-is
         }
 
         let activeTab = null;
@@ -1046,7 +1286,15 @@ if (file_exists($settingsFile)) {
                     options.total = parseInt(statusData.dataset.total);
                 }
                 if (statusData.dataset.logFile) options.logFile = statusData.dataset.logFile;
+                if (statusData.dataset.googleDocUrl) options.googleDocUrl = statusData.dataset.googleDocUrl;
+                if (statusData.dataset.googleFolderUrl) options.googleFolderUrl = statusData.dataset.googleFolderUrl;
                 showToast(type, message, options);
+
+                // Show a separate Google Docs error toast if export failed
+                if (statusData.dataset.googleDocsError) {
+                    showToast('error', 'Google Docs export failed: ' + statusData.dataset.googleDocsError);
+                }
+
                 statusData.remove();
             }
         });
@@ -1069,6 +1317,14 @@ if (file_exists($settingsFile)) {
             if (options.logFile) {
                 html += `<div style="margin-top:8px;"><a href="${options.logFile}" target="_blank" style="color:#667eea;text-decoration:underline;font-weight:500;">View Error Log</a></div>`;
             }
+            if (options.googleDocUrl) {
+                html += `<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px;">`;
+                html += `<a href="${options.googleDocUrl}" target="_blank" style="color:#1a73e8;text-decoration:underline;font-weight:600;">📄 Open Google Document →</a>`;
+                if (options.googleFolderUrl) {
+                    html += `<a href="${options.googleFolderUrl}" target="_blank" style="color:#555;text-decoration:underline;font-size:12px;">📁 Open folder in Drive →</a>`;
+                }
+                html += `</div>`;
+            }
             html += `</div><button class="toast-close" onclick="closeToast(this)">×</button>`;
             toast.innerHTML = html;
             container.appendChild(toast);
@@ -1082,11 +1338,62 @@ if (file_exists($settingsFile)) {
             setTimeout(() => toast.remove(), 300);
         }
 
-        document.getElementById('langForm').addEventListener('submit', function() {
+        function onOutputModeChange() {
+            const mode    = document.querySelector('input[name="output_mode"]:checked')?.value || 'docx';
+            const panel   = document.getElementById('gdrivePanel');
+            const btn     = document.getElementById('submitBtn');
+
+            if (mode === 'google_drive') {
+                panel.classList.add('active');
+                btn.textContent = 'Generate & Save to Google Docs';
+            } else {
+                panel.classList.remove('active');
+                btn.textContent = 'Generate Combined DOCX';
+            }
+        }
+
+        const GDRIVE_AUTHENTICATED = <?php echo $googleAuthenticated ? 'true' : 'false'; ?>;
+
+        document.getElementById('langForm').addEventListener('submit', function(e) {
+            const mode = document.querySelector('input[name="output_mode"]:checked')?.value || 'docx';
+
+            // Block submission if Google Drive selected but not authenticated
+            if (mode === 'google_drive' && !GDRIVE_AUTHENTICATED) {
+                e.preventDefault();
+                showToast('error', 'Please connect your Google account first before saving to Google Drive.');
+                return;
+            }
+
             document.getElementById('submitBtn').disabled = true;
-            document.getElementById('submitBtn').textContent = 'Processing...';
-            showToast('processing', 'Generating combined language document...', { duration: 3000 });
+            if (mode === 'google_drive') {
+                document.getElementById('submitBtn').textContent = 'Saving to Google Docs…';
+                showToast('processing', 'Creating Google Document with language tabs…', { duration: 10000 });
+            } else {
+                document.getElementById('submitBtn').textContent = 'Processing…';
+                showToast('processing', 'Generating combined language document…', { duration: 3000 });
+            }
         });
+
+        // Show Google auth status toasts
+        (function () {
+            const params = new URLSearchParams(window.location.search);
+            const status = params.get('google_status');
+            if (!status) return;
+
+            const messages = {
+                connected:       { type: 'success', msg: 'Google account connected successfully.' },
+                revoked:         { type: 'success', msg: 'Google account disconnected.' },
+                no_credentials:  { type: 'error',   msg: 'Google credentials file not found. Please add google-credentials.json.' },
+                auth_failed:     { type: 'error',   msg: 'Google authentication failed: ' + (params.get('error') || 'unknown error') },
+            };
+
+            const entry = messages[status];
+            if (entry) showToast(entry.type, entry.msg);
+
+            // Clean the URL so the toast doesn't reappear on reload
+            const clean = window.location.pathname;
+            history.replaceState(null, '', clean);
+        })();
     </script>
 </body>
 </html>

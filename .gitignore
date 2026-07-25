@@ -25,3 +25,7 @@ Thumbs.db
 meta-tool/tmp/
 meta-tool/logs/
 meta-tool/output.csv
+
+# Google OAuth credentials and token (never commit these)
+google-credentials.json
+output/.google-token.json

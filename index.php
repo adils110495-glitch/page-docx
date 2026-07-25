@@ -895,16 +895,17 @@ if (file_exists($settingsFile)) {
                 </div>
 
                 <div class="form-group">
-                    <label for="selector">CSS Selector (Optional)</label>
+                    <label for="selector">Selected Selector (Optional)</label>
                     <input
                         type="text"
                         name="selector"
                         id="selector"
-                        placeholder="your_right_contents"
+                        placeholder="&lt;article&gt; or .my-class or #my-id"
                     />
                     <div class="help-text">
-                        Enter a tag name, class name, or ID (e.g., "main", "your_right_contents", "#content").
-                        Works with any HTML tag (div, main, section, article, etc.). If empty, full &lt;body&gt; content will be extracted.
+                        Enter any tag (e.g. &lt;article&gt;, &lt;main&gt;, &lt;section&gt;, or just "article"),
+                        a class with a dot (.my-class) or an ID with a hash (#my-id).
+                        A plain name is matched as a tag first, then as a class. If empty, full &lt;body&gt; content will be extracted.
                     </div>
                 </div>
 
@@ -914,11 +915,13 @@ if (file_exists($settingsFile)) {
                         type="text"
                         name="skip_selectors"
                         id="skip_selectors"
-                        placeholder="header, footer, nav, sidebar, ads"
+                        placeholder="&lt;header&gt;, .my-class, #my-id"
                     />
                     <div class="help-text">
-                        Enter CSS class names or element IDs to exclude from content (comma-separated).
-                        Examples: "header, footer, sidebar, nav, ads" or ".menu, #sidebar, .advertisement"
+                        Comma-separated list of what to exclude. Each entry can be any tag
+                        (&lt;header&gt;, &lt;nav&gt;, &lt;footer&gt;, or just "header"),
+                        a class with a dot (.my-class) or an ID with a hash (#my-id).
+                        Examples: "&lt;header&gt;, &lt;footer&gt;, .menu, #sidebar"
                     </div>
                 </div>
 
