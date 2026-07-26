@@ -361,15 +361,8 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
             // Check for title1 class on ANY element - treat as h3 heading
             $elementClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
             if (strpos($elementClass, 'title1') !== false) {
-                $text = getTextContent($child);
-                if (!empty($text)) {
-                    $text = sanitizeTextForDocx($text);
-                    debugLog("  Adding title1 as h3 (element: {$nodeName}, class: " . substr($elementClass, 0, 30) . "): " . substr($text, 0, 50));
-                    $section->addText(
-                        $text,
-                        ['bold' => true, 'size' => 14, 'name' => 'Arial'],
-                        ['spaceAfter' => 240]
-                    );
+                debugLog("  Adding title1 as Heading 3 (element: {$nodeName}, class: " . substr($elementClass, 0, 30) . ")");
+                if (addHeadingContent($section, $child, 3)) {
                     // Add line break after title1
                     $section->addTextBreak();
                 }
@@ -383,54 +376,24 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                 case 'h4':
                 case 'h5':
                 case 'h6':
-                    $sizes = ['h1' => 18, 'h2' => 16, 'h3' => 14, 'h4' => 13, 'h5' => 12, 'h6' => 11];
                     // Get the class attribute if it exists
                     $headingClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
 
-                    // Check for title1 class - treat as h3 (size 14) with line break after
+                    // Check for title1 class - treat as Heading 3 with line break after
                     if (strpos($headingClass, 'title1') !== false) {
-                        $text = getTextContent($child);
-                        if (!empty($text)) {
-                            $text = sanitizeTextForDocx($text);
-                            debugLog("  Adding title1 heading as h3: " . substr($text, 0, 50));
-                            $section->addText(
-                                $text,
-                                ['bold' => true, 'size' => 14, 'name' => 'Arial'],
-                                ['spaceAfter' => 240]
-                            );
+                        debugLog("  Adding title1 heading as Heading 3");
+                        if (addHeadingContent($section, $child, 3)) {
                             $section->addTextBreak();
                         }
                         break;
                     }
 
-                    // Use slightly larger size for accordion titles
-                    $size = $sizes[$nodeName];
-                    if (strpos($headingClass, 'accordion__title') !== false && $nodeName === 'h3') {
-                        $size = 13; // Make FAQ questions more prominent
-                    }
-
-                    // Check if heading contains <br> tags or anchors
-                    if (needsInlineRun($child)) {
-                        debugLog("  Adding heading {$nodeName} with line breaks/links");
-                        addElementContent(
-                            $section,
-                            $child,
-                            ['bold' => true, 'size' => $size, 'name' => 'Arial'],
-                            ['spaceAfter' => 240]
-                        );
+                    // Real Word heading: h1 -> Heading 1, h2 -> Heading 2, ...
+                    $level = (int) substr($nodeName, 1);
+                    if (addHeadingContent($section, $child, $level)) {
+                        debugLog("  Adding heading {$nodeName} as Heading {$level}" . ($headingClass ? " (class: " . substr($headingClass, 0, 30) . ")" : ""));
                     } else {
-                        $text = getTextContent($child);
-                        if (!empty($text)) {
-                            debugLog("  Adding heading {$nodeName}" . ($headingClass ? " (class: " . substr($headingClass, 0, 30) . ")" : "") . ": " . substr($text, 0, 50));
-                            $text = sanitizeTextForDocx($text);
-                            $section->addText(
-                                $text,
-                                ['bold' => true, 'size' => $size, 'name' => 'Arial'],
-                                ['spaceAfter' => 240]
-                            );
-                        } else {
-                            debugLog("  Empty heading {$nodeName} skipped");
-                        }
+                        debugLog("  Empty heading {$nodeName} skipped");
                     }
                     break;
 
@@ -459,17 +422,28 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
 
                 case 'strong':
                 case 'b':
-                    $text = getTextContent($child);
-                    if (!empty($text) && $textRun) {
-                        $textRun->addText(sanitizeTextForDocx($text), ['bold' => true]);
+                    // Bold content must never be dropped - start a paragraph if needed
+                    if ($textRun) {
+                        processInlineContent($textRun, $child, ['bold' => true]);
+                    } else {
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            $boldRun = $section->addTextRun(['spaceAfter' => 200]);
+                            processInlineContent($boldRun, $child, ['size' => 11, 'name' => 'Arial', 'bold' => true]);
+                        }
                     }
                     break;
 
                 case 'em':
                 case 'i':
-                    $text = getTextContent($child);
-                    if (!empty($text) && $textRun) {
-                        $textRun->addText(sanitizeTextForDocx($text), ['italic' => true]);
+                    if ($textRun) {
+                        processInlineContent($textRun, $child, ['italic' => true]);
+                    } else {
+                        $text = getTextContent($child);
+                        if (!empty($text)) {
+                            $italicRun = $section->addTextRun(['spaceAfter' => 200]);
+                            processInlineContent($italicRun, $child, ['size' => 11, 'name' => 'Arial', 'italic' => true]);
+                        }
                     }
                     break;
 
@@ -511,54 +485,37 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     // Check if div has class that indicates it's a heading
                     $divClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
 
-                    // Check for title1 class - treat as h3 with line break after
+                    // Check for title1 class - treat as Heading 3 with line break after
                     if (strpos($divClass, 'title1') !== false) {
-                        $text = getTextContent($child);
-                        if (!empty($text)) {
-                            $text = sanitizeTextForDocx($text);
-                            debugLog("  Adding title1 DIV as h3: " . substr($text, 0, 50));
-                            $section->addText(
-                                $text,
-                                ['bold' => true, 'size' => 14, 'name' => 'Arial'],
-                                ['spaceAfter' => 240]
-                            );
+                        debugLog("  Adding title1 DIV as Heading 3");
+                        if (addHeadingContent($section, $child, 3)) {
                             $section->addTextBreak();
                         }
                         break;
                     }
 
-                    // Map other common heading-like classes to heading styles
+                    // Map other common heading-like classes to real heading levels
                     $headingClasses = [
-                        'title2' => ['size' => 14, 'bold' => true],  // Medium heading
-                        'title3' => ['size' => 13, 'bold' => true],  // Small heading
-                        'your-rights-faq__question' => ['size' => 13, 'bold' => true],  // FAQ questions
-                        'your-rights-compensation__title' => ['size' => 16, 'bold' => true],
-                        'bordered-card__title' => ['size' => 14, 'bold' => true],
+                        'title2' => 3,  // Medium heading
+                        'title3' => 4,  // Small heading
+                        'your-rights-faq__question' => 4,  // FAQ questions
+                        'your-rights-compensation__title' => 2,
+                        'bordered-card__title' => 3,
                     ];
 
-                    $isHeadingDiv = false;
-                    $headingStyle = null;
+                    $headingLevel = null;
 
-                    foreach ($headingClasses as $className => $style) {
+                    foreach ($headingClasses as $className => $classLevel) {
                         if (strpos($divClass, $className) !== false) {
-                            $isHeadingDiv = true;
-                            $headingStyle = $style;
+                            $headingLevel = $classLevel;
                             break;
                         }
                     }
 
-                    if ($isHeadingDiv && $headingStyle) {
+                    if ($headingLevel !== null) {
                         // Treat this div as a heading
-                        $text = getTextContent($child);
-                        if (!empty($text)) {
-                            $text = sanitizeTextForDocx($text);
-                            debugLog("  Adding div heading (class: " . substr($divClass, 0, 30) . "): " . substr($text, 0, 50));
-                            $section->addText(
-                                $text,
-                                array_merge(['name' => 'Arial'], $headingStyle),
-                                ['spaceAfter' => 240]
-                            );
-                        }
+                        debugLog("  Adding div heading (class: " . substr($divClass, 0, 30) . ") as Heading {$headingLevel}");
+                        addHeadingContent($section, $child, $headingLevel);
                     } else {
                         // Recursively process container elements
                         processNodeForDocx($section, $child, $textRun, $depth + 1);
@@ -579,42 +536,71 @@ function processNodeForDocx($section, $node, $textRun = null, $depth = 0) {
 /**
  * Process list elements (ul/ol) for DOCX
  */
-function processListForDocx($section, $listNode, $listType) {
-    $depth = 0;
+function processListForDocx($section, $listNode, $listType, $depth = 0) {
+    $listStyle = $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null;
+
     foreach ($listNode->childNodes as $child) {
         if (strtolower($child->nodeName) === 'li') {
+            // Nested lists are rendered separately, one level deeper
+            $nestedLists = getChildLists($child);
+            $item = $child;
+
+            if (!empty($nestedLists)) {
+                // Work on a copy without the nested lists so their text
+                // does not get merged into this bullet
+                $item = $child->cloneNode(true);
+                foreach (getChildLists($item) as $nested) {
+                    $item->removeChild($nested);
+                }
+            }
+
             // Check if LI contains heading elements (H1-H6) or title1 class elements
-            $hasHeading = containsHeading($child);
-            $hasTitle1 = containsTitle1Class($child);
+            $hasHeading = containsHeading($item);
+            $hasTitle1 = containsTitle1Class($item);
 
             // If LI contains headings or title1 class, process it recursively to preserve formatting
             if ($hasHeading || $hasTitle1) {
                 debugLog("  [LIST] LI contains headings/title1, processing recursively");
-                processNodeForDocx($section, $child, null, 0);
-            } elseif (containsAnchor($child) && !hasBlockChild($child)) {
-                // List item with links - use a list item run so hyperlinks are preserved
-                $listItemRun = $section->addListItemRun(
-                    $depth,
-                    $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
-                    ['spaceAfter' => 120]
-                );
-                processInlineContent($listItemRun, $child, ['size' => 11, 'name' => 'Arial']);
+                processNodeForDocx($section, $item, null, 0);
+            } elseif (needsInlineRun($item)) {
+                // List item with bold/italic/links - use a list item run so the
+                // formatting and hyperlinks are preserved
+                $listItemRun = $section->addListItemRun($depth, $listStyle, ['spaceAfter' => 120]);
+                processInlineContent($listItemRun, $item, ['size' => 11, 'name' => 'Arial']);
             } else {
                 // Regular list item - extract text
-                $text = getTextContent($child);
+                $text = getTextContent($item);
                 if (!empty($text)) {
                     $text = sanitizeTextForDocx($text);
                     $section->addListItem(
                         $text,
                         $depth,
                         ['size' => 11, 'name' => 'Arial'],
-                        $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
+                        $listStyle,
                         ['spaceAfter' => 120]
                     );
                 }
             }
+
+            // Render nested lists as sub-bullets
+            foreach ($nestedLists as $nested) {
+                processListForDocx($section, $nested, strtolower($nested->nodeName), $depth + 1);
+            }
         }
     }
+}
+
+/**
+ * Get the ul/ol children of a list item
+ */
+function getChildLists($node) {
+    $lists = [];
+    foreach ($node->childNodes as $child) {
+        if ($child->nodeType === XML_ELEMENT_NODE && in_array(strtolower($child->nodeName), ['ul', 'ol'])) {
+            $lists[] = $child;
+        }
+    }
+    return $lists;
 }
 
 /**
@@ -784,8 +770,13 @@ function sanitizeTextForDocx($text) {
     // Normalize Cyrillic lookalike characters to Latin equivalents
     // This fixes issues where Cyrillic characters are mixed with Latin text
     $text = normalizeCyrillicToLatin($text);
+    // Turn non-breaking and other unicode spaces (&nbsp;, en/em spaces, ...) into
+    // plain spaces - otherwise runs of them survive as wide gaps in the DOCX
+    $text = preg_replace('/[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]/u', ' ', $text);
+    // Drop zero-width characters, which also render as stray gaps
+    $text = preg_replace('/[\x{200B}-\x{200D}\x{2060}\x{FEFF}]/u', '', $text);
     // Replace multiple whitespace with single space
-    $text = preg_replace('/\s+/', ' ', $text);
+    $text = preg_replace('/\s+/u', ' ', $text);
     // Remove angle brackets — these cause "Illegal qualified name character" in DOCX XML
     // when html_entity_decode converts &lt;/&gt; back to raw < > before they reach PHPWord
     $text = str_replace(['<', '>'], ['', ''], $text);
@@ -913,11 +904,37 @@ function containsAnchor($node) {
 }
 
 /**
+ * Check if a node contains inline formatting (<b>, <strong>, <em>, <i>, <u>)
+ */
+function containsInlineFormatting($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE && in_array(strtolower($node->nodeName), ['b', 'strong', 'em', 'i', 'u'])) {
+        return true;
+    }
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (containsInlineFormatting($child)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
  * Decide whether an element should be rendered through a TextRun
- * (needed for <br> line breaks and for anchors to stay clickable)
+ * (needed for <br> line breaks, clickable anchors and bold/italic runs)
  */
 function needsInlineRun($node) {
-    return containsBrTag($node) || (containsAnchor($node) && !hasBlockChild($node));
+    if (containsBrTag($node)) {
+        return true;
+    }
+
+    // Inline processing drops block-level children, so only use it when there are none
+    if (hasBlockChild($node)) {
+        return false;
+    }
+
+    return containsAnchor($node) || containsInlineFormatting($node);
 }
 
 /**
@@ -1038,7 +1055,7 @@ function runEndsWithSpace($textRun) {
  * Process inline content of an element, handling <br> tags and inline formatting
  * This renders content directly to a TextRun, preserving <br> as line breaks
  */
-function processInlineContent($textRun, $node, $fontStyle = []) {
+function processInlineContent($textRun, $node, $fontStyle = [], $suppressBold = false) {
     // Block-level elements that should not be processed inline
     $blockElements = ['div', 'p', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'section', 'article', 'header', 'footer', 'nav', 'aside'];
 
@@ -1076,17 +1093,18 @@ function processInlineContent($textRun, $node, $fontStyle = []) {
                     break;
                 case 'strong':
                 case 'b':
-                    $boldStyle = array_merge($fontStyle, ['bold' => true]);
-                    processInlineContent($textRun, $child, $boldStyle);
+                    // Bold, unless we are inside a heading (headings are never bold)
+                    $boldStyle = $suppressBold ? $fontStyle : array_merge($fontStyle, ['bold' => true]);
+                    processInlineContent($textRun, $child, $boldStyle, $suppressBold);
                     break;
                 case 'em':
                 case 'i':
                     $italicStyle = array_merge($fontStyle, ['italic' => true]);
-                    processInlineContent($textRun, $child, $italicStyle);
+                    processInlineContent($textRun, $child, $italicStyle, $suppressBold);
                     break;
                 case 'u':
                     $underlineStyle = array_merge($fontStyle, ['underline' => 'single']);
-                    processInlineContent($textRun, $child, $underlineStyle);
+                    processInlineContent($textRun, $child, $underlineStyle, $suppressBold);
                     break;
                 case 'a':
                     // Handle links - keep them as real hyperlinks
@@ -1097,11 +1115,54 @@ function processInlineContent($textRun, $node, $fontStyle = []) {
                 case 'sub':
                 default:
                     // Process other inline elements recursively
-                    processInlineContent($textRun, $child, $fontStyle);
+                    processInlineContent($textRun, $child, $fontStyle, $suppressBold);
                     break;
             }
         }
     }
+}
+
+/**
+ * Register real Word heading styles (Heading 1-6) on the document
+ * so DOCX headings are true headings, not just bold text
+ */
+function registerHeadingStyles($phpWord) {
+    $headingSizes = [1 => 18, 2 => 16, 3 => 14, 4 => 13, 5 => 12, 6 => 11];
+
+    foreach ($headingSizes as $level => $size) {
+        // Headings are sized, not bold - only <b>/<strong> inside them turns bold
+        $phpWord->addTitleStyle(
+            $level,
+            ['bold' => false, 'size' => $size, 'name' => 'Arial'],
+            ['spaceAfter' => 240, 'spaceBefore' => 120]
+        );
+    }
+}
+
+/**
+ * Add a heading to the section as a real Word heading (Heading 1-6)
+ * Headings containing <br> or links keep the heading style via a TextRun
+ */
+function addHeadingContent($section, $node, $level) {
+    $level = max(1, min(6, (int) $level));
+
+    if (needsInlineRun($node)) {
+        // Keep line breaks / hyperlinks, but still use the heading paragraph style.
+        // Bold is suppressed here so <strong>/<b> inside a heading stays unbolded.
+        $textRun = $section->addTextRun('Heading' . $level);
+        processInlineContent($textRun, $node, [], true);
+
+        return $textRun->countElements() > 0;
+    }
+
+    $text = sanitizeTextForDocx(getTextContent($node));
+    if ($text === '') {
+        return false;
+    }
+
+    $section->addTitle($text, $level);
+
+    return true;
 }
 
 /**
@@ -1139,6 +1200,10 @@ function generateDocx($content, $filename, $project = null) {
     error_reporting($oldErrorReporting & ~E_WARNING);
 
     $phpWord = new PhpWord();
+
+    // Register real Word heading styles so h1-h6 become Heading 1-6
+    registerHeadingStyles($phpWord);
+
     $section = $phpWord->addSection();
 
     // Add Meta Title if available

@@ -176,7 +176,11 @@ function langSanitizeText($text) {
         'А'=>'A','В'=>'B','С'=>'C','Е'=>'E','Н'=>'H','К'=>'K','М'=>'M','О'=>'O','Р'=>'P','Т'=>'T','Х'=>'X','І'=>'I',
     ];
     $text = strtr($text, $cyrillicMap);
-    $text = preg_replace('/\s+/', ' ', $text);
+    // Non-breaking / unicode spaces -> plain space (runs of them show as wide gaps)
+    $text = preg_replace('/[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]/u', ' ', $text);
+    // Drop zero-width characters
+    $text = preg_replace('/[\x{200B}-\x{200D}\x{2060}\x{FEFF}]/u', '', $text);
+    $text = preg_replace('/\s+/u', ' ', $text);
     $text = str_replace(['<', '>'], ['', ''], $text);
     $text = str_replace('&', 'and', $text);
     $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
@@ -266,8 +270,22 @@ function langContainsAnchor($node) {
     return false;
 }
 
+function langContainsInlineFormatting($node) {
+    if ($node->nodeType === XML_ELEMENT_NODE && in_array(strtolower($node->nodeName), ['b','strong','em','i','u'])) return true;
+    if ($node->hasChildNodes()) {
+        foreach ($node->childNodes as $child) {
+            if (langContainsInlineFormatting($child)) return true;
+        }
+    }
+    return false;
+}
+
 function langNeedsInlineRun($node) {
-    return langContainsBrTag($node) || (langContainsAnchor($node) && !langHasBlockChild($node));
+    if (langContainsBrTag($node)) return true;
+    // Inline processing drops block-level children, so only use it when there are none
+    if (langHasBlockChild($node)) return false;
+
+    return langContainsAnchor($node) || langContainsInlineFormatting($node);
 }
 
 function langAddLinkToTextRun($textRun, $node, $fontStyle = []) {
@@ -321,7 +339,7 @@ function langContainsTitle1Class($node) {
     return false;
 }
 
-function langProcessInlineContent($textRun, $node, $fontStyle = []) {
+function langProcessInlineContent($textRun, $node, $fontStyle = [], $suppressBold = false) {
     $blockElements = ['div','p','ul','ol','li','table','tr','td','th','h1','h2','h3','h4','h5','h6','blockquote','section','article','header','footer','nav','aside'];
     foreach ($node->childNodes as $child) {
         if ($child->nodeType === XML_TEXT_NODE) {
@@ -340,18 +358,41 @@ function langProcessInlineContent($textRun, $node, $fontStyle = []) {
             switch ($nodeName) {
                 case 'br': $textRun->addTextBreak(); break;
                 case 'strong': case 'b':
-                    langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['bold' => true])); break;
+                    // Bold, unless we are inside a heading (headings are never bold)
+                    $boldStyle = $suppressBold ? $fontStyle : array_merge($fontStyle, ['bold' => true]);
+                    langProcessInlineContent($textRun, $child, $boldStyle, $suppressBold); break;
                 case 'em': case 'i':
-                    langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['italic' => true])); break;
+                    langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['italic' => true]), $suppressBold); break;
                 case 'u':
-                    langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['underline' => 'single'])); break;
+                    langProcessInlineContent($textRun, $child, array_merge($fontStyle, ['underline' => 'single']), $suppressBold); break;
                 case 'a':
                     langAddLinkToTextRun($textRun, $child, $fontStyle); break;
                 default:
-                    langProcessInlineContent($textRun, $child, $fontStyle); break;
+                    langProcessInlineContent($textRun, $child, $fontStyle, $suppressBold); break;
             }
         }
     }
+}
+
+/**
+ * Add a heading as a real Word heading. Page h1-h6 map to Heading 2-6,
+ * because Heading 1 is reserved for the language tab label.
+ */
+function langAddHeadingContent($section, $node, $htmlLevel) {
+    $level = max(2, min(6, (int) $htmlLevel + 1));
+
+    if (langNeedsInlineRun($node)) {
+        // Bold suppressed so <strong>/<b> inside a heading stays unbolded
+        $textRun = $section->addTextRun('Heading' . $level);
+        langProcessInlineContent($textRun, $node, [], true);
+        return $textRun->countElements() > 0;
+    }
+
+    $text = langSanitizeText(langGetTextContent($node));
+    if ($text === '') return false;
+
+    $section->addTitle($text, $level);
+    return true;
 }
 
 function langAddElementContent($section, $node, $fontStyle = [], $paragraphStyle = []) {
@@ -369,30 +410,54 @@ function langAddElementContent($section, $node, $fontStyle = [], $paragraphStyle
     }
 }
 
-function langProcessListForDocx($section, $listNode, $listType) {
+function langGetChildLists($node) {
+    $lists = [];
+    foreach ($node->childNodes as $child) {
+        if ($child->nodeType === XML_ELEMENT_NODE && in_array(strtolower($child->nodeName), ['ul', 'ol'])) {
+            $lists[] = $child;
+        }
+    }
+    return $lists;
+}
+
+function langProcessListForDocx($section, $listNode, $listType, $depth = 0) {
+    $listStyle = $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null;
+
     foreach ($listNode->childNodes as $child) {
         if (strtolower($child->nodeName) === 'li') {
-            if (langContainsHeading($child) || langContainsTitle1Class($child)) {
-                langProcessNodeForDocx($section, $child, null, 0);
-            } elseif (langContainsAnchor($child) && !langHasBlockChild($child)) {
-                $listItemRun = $section->addListItemRun(
-                    0,
-                    $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
-                    ['spaceAfter' => 120]
-                );
-                langProcessInlineContent($listItemRun, $child, ['size' => 11, 'name' => 'Arial']);
+            // Nested lists are rendered separately, one level deeper
+            $nestedLists = langGetChildLists($child);
+            $item = $child;
+
+            if (!empty($nestedLists)) {
+                $item = $child->cloneNode(true);
+                foreach (langGetChildLists($item) as $nested) {
+                    $item->removeChild($nested);
+                }
+            }
+
+            if (langContainsHeading($item) || langContainsTitle1Class($item)) {
+                langProcessNodeForDocx($section, $item, null, 0);
+            } elseif (langNeedsInlineRun($item)) {
+                // Preserve bold/italic/links inside the bullet
+                $listItemRun = $section->addListItemRun($depth, $listStyle, ['spaceAfter' => 120]);
+                langProcessInlineContent($listItemRun, $item, ['size' => 11, 'name' => 'Arial']);
             } else {
-                $text = langGetTextContent($child);
+                $text = langGetTextContent($item);
                 if (!empty($text)) {
                     $text = langSanitizeText($text);
                     $section->addListItem(
                         $text,
-                        0,
+                        $depth,
                         ['size' => 11, 'name' => 'Arial'],
-                        $listType === 'ol' ? ['listType' => \PhpOffice\PhpWord\Style\ListItem::TYPE_NUMBER] : null,
+                        $listStyle,
                         ['spaceAfter' => 120]
                     );
                 }
+            }
+
+            foreach ($nestedLists as $nested) {
+                langProcessListForDocx($section, $nested, strtolower($nested->nodeName), $depth + 1);
             }
         }
     }
@@ -479,9 +544,7 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
             $elementClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
 
             if (strpos($elementClass, 'title1') !== false) {
-                $text = langGetTextContent($child);
-                if (!empty($text)) {
-                    $section->addText(langSanitizeText($text), ['bold' => true, 'size' => 14, 'name' => 'Arial'], ['spaceAfter' => 240]);
+                if (langAddHeadingContent($section, $child, 3)) {
                     $section->addTextBreak();
                 }
                 continue;
@@ -489,25 +552,14 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
 
             switch ($nodeName) {
                 case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
-                    $sizes = ['h1'=>18,'h2'=>16,'h3'=>14,'h4'=>13,'h5'=>12,'h6'=>11];
                     $headingClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
                     if (strpos($headingClass, 'title1') !== false) {
-                        $text = langGetTextContent($child);
-                        if (!empty($text)) {
-                            $section->addText(langSanitizeText($text), ['bold' => true, 'size' => 14, 'name' => 'Arial'], ['spaceAfter' => 240]);
+                        if (langAddHeadingContent($section, $child, 3)) {
                             $section->addTextBreak();
                         }
                         break;
                     }
-                    $size = $sizes[$nodeName];
-                    if (langNeedsInlineRun($child)) {
-                        langAddElementContent($section, $child, ['bold' => true, 'size' => $size, 'name' => 'Arial'], ['spaceAfter' => 240]);
-                    } else {
-                        $text = langGetTextContent($child);
-                        if (!empty($text)) {
-                            $section->addText(langSanitizeText($text), ['bold' => true, 'size' => $size, 'name' => 'Arial'], ['spaceAfter' => 240]);
-                        }
-                    }
+                    langAddHeadingContent($section, $child, (int) substr($nodeName, 1));
                     break;
 
                 case 'p':
@@ -522,13 +574,22 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                     break;
 
                 case 'strong': case 'b':
-                    $text = langGetTextContent($child);
-                    if (!empty($text) && $textRun) $textRun->addText(langSanitizeText($text), ['bold' => true]);
+                    // Bold content must never be dropped - start a paragraph if needed
+                    if ($textRun) {
+                        langProcessInlineContent($textRun, $child, ['bold' => true]);
+                    } elseif (langGetTextContent($child) !== '') {
+                        $boldRun = $section->addTextRun(['spaceAfter' => 200]);
+                        langProcessInlineContent($boldRun, $child, ['size' => 11, 'name' => 'Arial', 'bold' => true]);
+                    }
                     break;
 
                 case 'em': case 'i':
-                    $text = langGetTextContent($child);
-                    if (!empty($text) && $textRun) $textRun->addText(langSanitizeText($text), ['italic' => true]);
+                    if ($textRun) {
+                        langProcessInlineContent($textRun, $child, ['italic' => true]);
+                    } elseif (langGetTextContent($child) !== '') {
+                        $italicRun = $section->addTextRun(['spaceAfter' => 200]);
+                        langProcessInlineContent($italicRun, $child, ['size' => 11, 'name' => 'Arial', 'italic' => true]);
+                    }
                     break;
 
                 case 'a':
@@ -559,34 +620,27 @@ function langProcessNodeForDocx($section, $node, $textRun = null, $depth = 0) {
                 case 'div': case 'section': case 'article': case 'main':
                     $divClass = $child->hasAttribute('class') ? $child->getAttribute('class') : '';
                     if (strpos($divClass, 'title1') !== false) {
-                        $text = langGetTextContent($child);
-                        if (!empty($text)) {
-                            $section->addText(langSanitizeText($text), ['bold' => true, 'size' => 14, 'name' => 'Arial'], ['spaceAfter' => 240]);
+                        if (langAddHeadingContent($section, $child, 3)) {
                             $section->addTextBreak();
                         }
                         break;
                     }
                     $headingClasses = [
-                        'title2' => ['size' => 14, 'bold' => true],
-                        'title3' => ['size' => 13, 'bold' => true],
-                        'your-rights-faq__question' => ['size' => 13, 'bold' => true],
-                        'your-rights-compensation__title' => ['size' => 16, 'bold' => true],
-                        'bordered-card__title' => ['size' => 14, 'bold' => true],
+                        'title2' => 3,
+                        'title3' => 4,
+                        'your-rights-faq__question' => 4,
+                        'your-rights-compensation__title' => 2,
+                        'bordered-card__title' => 3,
                     ];
-                    $isHeadingDiv = false;
-                    $headingStyle = null;
-                    foreach ($headingClasses as $className => $style) {
+                    $headingLevel = null;
+                    foreach ($headingClasses as $className => $classLevel) {
                         if (strpos($divClass, $className) !== false) {
-                            $isHeadingDiv = true;
-                            $headingStyle = $style;
+                            $headingLevel = $classLevel;
                             break;
                         }
                     }
-                    if ($isHeadingDiv && $headingStyle) {
-                        $text = langGetTextContent($child);
-                        if (!empty($text)) {
-                            $section->addText(langSanitizeText($text), array_merge(['name' => 'Arial'], $headingStyle), ['spaceAfter' => 240]);
-                        }
+                    if ($headingLevel !== null) {
+                        langAddHeadingContent($section, $child, $headingLevel);
                     } else {
                         langProcessNodeForDocx($section, $child, $textRun, $depth + 1);
                     }
@@ -689,6 +743,17 @@ function generateLangDocx($languageGroups, $filename, $project, $selector, $skip
         'spaceBefore' => 240,
         'keepNext'    => true,
     ]);
+
+    // Heading 2-6 = the page's own h1-h6 (shifted down one level, since
+    // Heading 1 is used for the language tab label)
+    foreach ([2 => 18, 3 => 16, 4 => 14, 5 => 13, 6 => 12] as $level => $size) {
+        // Headings are sized, not bold - only <b>/<strong> inside them turns bold
+        $phpWord->addTitleStyle(
+            $level,
+            ['bold' => false, 'size' => $size, 'name' => 'Arial'],
+            ['spaceAfter' => 240, 'spaceBefore' => 120]
+        );
+    }
 
 
     // Sort language groups alphabetically
