@@ -14,6 +14,7 @@ A Core PHP web application that converts website page content into properly form
 - 🎨 **Preserves HTML formatting** in generated documents
 - 📦 **Slug-based filenames** derived from URLs
 - 🔄 **Real-time directory browsing** - See generated files immediately
+- 🔤 **Cyrillic Word Cleaner** - Strip Cyrillic/lookalike Unicode out of English text
 - ⚡ **Core PHP** - No frameworks, lightweight and fast
 
 ## Requirements
@@ -170,6 +171,93 @@ The system provides comprehensive error handling:
 - Click any log file to open it in a new tab
 - Copy failed URLs from the log to retry processing
 
+## Cyrillic Word Cleaner
+
+Route: **`/cyrillic-cleaner.php`** (linked from the nav bar on every page)
+
+Cleans corrupted English text in which Latin letters have been swapped for Cyrillic
+or other lookalike Unicode characters (`fоr`, `саn`, `ԁelаyeԁ`, `Prоtectiоns`, …).
+It is a character/word substituter only — it never rewrites, rephrases, or reformats
+the text.
+
+### Dictionary pipeline
+
+```
+crilic-wordss.csv  →  cyrillic-dictionary.php  →  JSON replacement dictionary  →  cleaner engine (JS)
+```
+
+`crilic-wordss.csv` (project root) is the single source of truth. `cyrillic-dictionary.php`
+parses it and serves it as JSON:
+
+- The delimiter (tab / comma / semicolon / pipe) is detected automatically.
+- The corrupted-word and correct-word columns are detected from the header names,
+  falling back to content analysis if the headers are unfamiliar or missing.
+  Columns such as *Occurrences*, *Cyrillic codepoints* and *Search-replace pair*
+  are explicitly ignored.
+- The result is cached in `output/.cyrillic-dictionary.json` and invalidated
+  automatically whenever the CSV's modification time or size changes.
+
+**To add new mappings, edit `crilic-wordss.csv` — nothing else needs to change.**
+Use the *Reload CSV* link in the tool to pick up changes without restarting.
+
+### Two layers of detection
+
+1. **CSV word mapping** — exact word replacements from `crilic-wordss.csv`,
+   plus a case-insensitive fallback that preserves the original capitalisation.
+2. **Generic Unicode mapping** — a character-level scan that fixes lookalike
+   characters in words that are *not* in the CSV at all
+   (`informаtion` → `information`, `аirline` → `airline`).
+
+Covered scripts: Cyrillic, Greek, Armenian, Cherokee, Roman numeral forms,
+fullwidth Latin and IPA lookalikes.
+
+### Safety rules
+
+- A word containing no Latin letter at all (e.g. real Russian text) is left
+  untouched and reported instead of guessed at. The *Force-convert all-Cyrillic
+  words* option overrides this.
+- URLs, email addresses and HTML link attributes are never rewritten — a lookalike
+  character there changes where the link points. They are reported instead.
+  Toggle off with *Protect URLs & emails*.
+- Anything that cannot be confidently mapped is counted under
+  **Suspicious Characters Remaining** and listed with its codepoint.
+
+### Rich text vs plain text
+
+The tool has two modes, selected above the editors.
+
+**Rich text (default)** — paste formatted content straight out of the WordPress
+editor, Word or a web page. Only *text nodes* are touched: headings, bold, italics,
+lists, blockquotes, tables, images, links, classes and inline styles come out exactly
+as they went in — an `<h1>` in gives an `<h1>` out. Copying puts real HTML on the
+clipboard, so pasting back into WordPress keeps the formatting.
+
+The input pane has a formatting toolbar (paragraph / H1–H4 / quote / preformatted,
+bold, italic, underline, bulleted and numbered lists, link, clear formatting), so
+blocks can be applied by hand as well as pasted in.
+
+Because attributes are never rewritten, a lookalike character inside an `href`
+survives untouched and is reported under *Suspicious Characters Remaining* — changing
+it would silently repoint the link.
+
+Pasted markup is arbitrary web content, so `<script>`, `<style>`, `<iframe>`,
+`javascript:` URLs and `on*` event handlers are stripped before the result is
+rendered back into the page.
+
+**Plain text** — a plain textarea in and out, for when formatting is irrelevant.
+Paragraphs, line breaks, spacing and punctuation are preserved exactly.
+
+### Features
+
+- Side-by-side input/output editors (stacked on mobile)
+- **Auto Clean** — debounced cleaning as you type or paste
+- **Show Changes** — a table of every replacement with its type and count
+- Statistics: characters replaced, words corrected, total replacements, suspicious remaining
+- Copy Result / Clear
+- Optional stripping of invisible characters (zero-width, soft hyphen, NBSP)
+
+All processing happens locally in the browser — no API calls, no text leaves the page.
+
 ## File Structure
 
 ```
@@ -179,6 +267,9 @@ doc-generator/
 ├── Dockerfile            # Docker image definition
 ├── index.php             # Main UI page
 ├── generator.php         # DOCX generation logic
+├── crilic-wordss.csv     # Cyrillic → Latin word dictionary (source of truth)
+├── cyrillic-cleaner.php  # Cyrillic Word Cleaner - UI + cleaning engine
+├── cyrillic-dictionary.php # Parses crilic-wordss.csv into a JSON dictionary
 ├── output/               # Generated DOCX files
 ├── vendor/               # Composer dependencies
 └── README.md            # This file
