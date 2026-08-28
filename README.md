@@ -197,8 +197,37 @@ parses it and serves it as JSON:
 - The result is cached in `output/.cyrillic-dictionary.json` and invalidated
   automatically whenever the CSV's modification time or size changes.
 
+The CSV holds **two kinds of entry**, and rows of either kind may appear anywhere
+in the file:
+
+**1. Word mappings** — the main table, one corrupted word per row:
+
+| Word as published | Occurrences | Cyrillic codepoints | Correct Latin form |
+| ----------------- | ----------- | ------------------- | ------------------ |
+| `fоr`             | 241         | о = U+043E          | `for`              |
+
+**2. Character mappings** — a single lookalike and its Latin equivalent:
+
+```
+а → a
+о → o
+ԁ → d
+```
+
+`→`, `->`, `-->`, `=>` and `⟶` all work, as does a plain two-column
+`а <tab> a`. These extend and override the cleaner's built-in character table,
+so a newly discovered lookalike only has to be added here.
+
+For safety the left side must be exactly one non-ASCII character and the right
+side plain ASCII — a lookalike can never be rewritten into another Cyrillic
+character, and a row like `a -> b` is refused.
+
 **To add new mappings, edit `crilic-wordss.csv` — nothing else needs to change.**
 Use the *Reload CSV* link in the tool to pick up changes without restarting.
+
+Any line the parser cannot interpret is reported next to the dictionary status
+("⚠ N lines not recognised", hover for the text), so an edit in an unexpected
+format is never silently ignored.
 
 ### Two layers of detection
 
@@ -206,7 +235,8 @@ Use the *Reload CSV* link in the tool to pick up changes without restarting.
    plus a case-insensitive fallback that preserves the original capitalisation.
 2. **Generic Unicode mapping** — a character-level scan that fixes lookalike
    characters in words that are *not* in the CSV at all
-   (`informаtion` → `information`, `аirline` → `airline`).
+   (`informаtion` → `information`, `аirline` → `airline`). It uses the
+   character mappings from the CSV merged over a built-in table.
 
 Covered scripts: Cyrillic, Greek, Armenian, Cherokee, Roman numeral forms,
 fullwidth Latin and IPA lookalikes.
@@ -255,6 +285,9 @@ Paragraphs, line breaks, spacing and punctuation are preserved exactly.
 - Statistics: characters replaced, words corrected, total replacements, suspicious remaining
 - Copy Result / Clear
 - Optional stripping of invisible characters (zero-width, soft hyphen, NBSP)
+- **Clean up markup** (on by default) removes the `<div>` and `<span>` wrappers
+  that editors and clipboards add, so what you paste into WordPress is just the
+  headings, paragraphs, lists, links and emphasis
 
 All processing happens locally in the browser — no API calls, no text leaves the page.
 

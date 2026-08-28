@@ -201,6 +201,7 @@
     .dict-line b { color: #4a5568; }
     .dict-line a { color: #667eea; font-weight: 600; text-decoration: none; cursor: pointer; }
     .dict-line a:hover { text-decoration: underline; }
+    .dict-line .skipped { color: #b7791f; font-weight: 600; cursor: help; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e0; flex: none; }
     .dot.ok { background: #38a169; }
     .dot.err { background: #e53e3e; }
@@ -263,6 +264,7 @@
             <label class="opt"><input type="checkbox" id="optChanges" checked> Show Changes</label>
             <label class="opt"><input type="checkbox" id="optUrls" checked> Protect URLs &amp; emails <span class="hint">(never rewrite a link)</span></label>
             <label class="opt"><input type="checkbox" id="optInvisible"> Strip invisible characters <span class="hint">(zero-width, soft hyphen, NBSP)</span></label>
+            <label class="opt"><input type="checkbox" id="optTidy" checked> Clean up markup <span class="hint">(drop &lt;div&gt; and &lt;span&gt; wrappers)</span></label>
             <label class="opt"><input type="checkbox" id="optForce"> Force-convert all-Cyrillic words <span class="hint">(unsafe for real Cyrillic text)</span></label>
         </div>
     </div>
@@ -372,8 +374,12 @@
      * Only characters whose Latin counterpart is unambiguous are listed.
      * Anything not in here is reported as "suspicious remaining" rather
      * than guessed at.
+     *
+     * This is the built-in baseline. Any character mappings found in
+     * crilic-wordss.csv (rows like "а → a") are merged over the top, so the
+     * CSV can extend or override it without a code change.
      * ================================================================= */
-    var LOOKALIKE = {
+    var BUILTIN_LOOKALIKE = {
         /* --- Cyrillic --- */
         'а': 'a', 'А': 'A',   // а А
         'В': 'B',                  // В
@@ -421,11 +427,35 @@
 
     // Fullwidth Latin letters and digits are unambiguous - generate them.
     for (var i = 0; i < 26; i++) {
-        LOOKALIKE[String.fromCharCode(0xFF21 + i)] = String.fromCharCode(65 + i);
-        LOOKALIKE[String.fromCharCode(0xFF41 + i)] = String.fromCharCode(97 + i);
+        BUILTIN_LOOKALIKE[String.fromCharCode(0xFF21 + i)] = String.fromCharCode(65 + i);
+        BUILTIN_LOOKALIKE[String.fromCharCode(0xFF41 + i)] = String.fromCharCode(97 + i);
     }
     for (var d = 0; d < 10; d++) {
-        LOOKALIKE[String.fromCharCode(0xFF10 + d)] = String.fromCharCode(48 + d);
+        BUILTIN_LOOKALIKE[String.fromCharCode(0xFF10 + d)] = String.fromCharCode(48 + d);
+    }
+
+    /* The map the cleaner actually uses. buildDictionary() rebuilds it as
+       built-ins + whatever character mappings the CSV supplies. */
+    var LOOKALIKE = BUILTIN_LOOKALIKE;
+
+    function applyCsvChars(csvChars) {
+        var merged = {}, k;
+        for (k in BUILTIN_LOOKALIKE) {
+            if (Object.prototype.hasOwnProperty.call(BUILTIN_LOOKALIKE, k)) merged[k] = BUILTIN_LOOKALIKE[k];
+        }
+        var added = 0, overrode = 0;
+        for (k in (csvChars || {})) {
+            if (!Object.prototype.hasOwnProperty.call(csvChars, k)) continue;
+            if (k.length === 0) continue;
+            if (Object.prototype.hasOwnProperty.call(merged, k)) {
+                if (merged[k] !== csvChars[k]) overrode++;
+            } else {
+                added++;
+            }
+            merged[k] = csvChars[k];
+        }
+        LOOKALIKE = merged;
+        return { added: added, overrode: overrode };
     }
 
     /* Invisible / formatting characters that corrupted text usually carries along.
@@ -539,6 +569,10 @@
             );
         }
 
+        // Layer 2: the CSV's own character list extends/overrides the built-ins.
+        dict.charStats = applyCsvChars(payload.chars);
+        dict.charCount = payload.charCount || 0;
+
         dict.count = dict.exact.size;
         dict.source = payload.source || 'crilic-wordss.csv';
         dict.loaded = true;
@@ -560,17 +594,35 @@
                 }
                 buildDictionary(payload);
                 el.dot.className = 'dot ok';
-                var cols = payload.columns || {};
-                el.text.innerHTML = '<b>' + payload.count + '</b> word mappings from <b>' +
-                    escapeHtml(payload.source) + '</b>' +
-                    (cols.source ? ' (' + escapeHtml(cols.source) + ' → ' + escapeHtml(cols.target) + ')' : '');
+
+                var bits = ['<b>' + payload.count + '</b> word mappings'];
+                if (payload.charCount) {
+                    bits.push('<b>' + payload.charCount + '</b> character mappings');
+                }
+                var line = bits.join(' + ') + ' from <b>' + escapeHtml(payload.source) + '</b>';
+
+                // Say plainly when a line in the CSV could not be interpreted, so an
+                // edit in an unexpected format is never silently ignored.
+                if (payload.ignored && payload.ignored.length) {
+                    line += ' <span class="skipped" title="' +
+                        escapeHtml(payload.ignored.join('\n')) + '">&#9888; ' +
+                        payload.ignored.length + ' line' +
+                        (payload.ignored.length === 1 ? '' : 's') + ' not recognised</span>';
+                }
+                el.text.innerHTML = line;
+
                 if (payload.warnings && payload.warnings.length) {
                     console.warn('[Cyrillic Cleaner] dictionary warnings:', payload.warnings);
+                }
+                if (payload.ignored && payload.ignored.length) {
+                    console.warn('[Cyrillic Cleaner] lines not recognised in ' +
+                        payload.source + ':', payload.ignored);
                 }
             })
             .catch(function (err) {
                 dict.loaded = false;
                 dict.count = 0;
+                LOOKALIKE = BUILTIN_LOOKALIKE;   // built-ins still clean characters
                 el.dot.className = 'dot err';
                 el.text.innerHTML = 'CSV dictionary unavailable — ' + escapeHtml(err.message) +
                     ' Character-level cleaning still works.';
@@ -801,6 +853,62 @@
      * ------------------------------------------------------------------ */
     var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEXTAREA: 1 };
 
+    /* ---- Markup tidy-up -------------------------------------------------
+     * Editors and clipboards wrap pasted content in <div> and <span> shells
+     * (<span style="font-weight:400"> and friends). They carry no meaning and
+     * follow the text into WordPress, so they are unwrapped by default.
+     *
+     * Semantic tags - headings, p, strong/em/u, lists, links, tables - are
+     * always kept, so the visible formatting is unchanged.
+     * ------------------------------------------------------------------ */
+    var BLOCK_TAGS = {
+        P: 1, DIV: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1,
+        UL: 1, OL: 1, LI: 1, BLOCKQUOTE: 1, PRE: 1, HR: 1,
+        TABLE: 1, THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, TD: 1, TH: 1,
+        SECTION: 1, ARTICLE: 1, ASIDE: 1, HEADER: 1, FOOTER: 1, MAIN: 1, NAV: 1,
+        FIGURE: 1, FIGCAPTION: 1, DL: 1, DT: 1, DD: 1, FORM: 1
+    };
+
+    function unwrap(el) {
+        var parent = el.parentNode;
+        if (!parent) return;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        parent.removeChild(el);
+    }
+
+    function hasBlockChild(el) {
+        for (var i = 0; i < el.children.length; i++) {
+            if (BLOCK_TAGS[el.children[i].tagName]) return true;
+        }
+        return false;
+    }
+
+    function tidyMarkup(root) {
+        // Spans are inline - unwrapping never changes the document structure.
+        var spans = root.querySelectorAll('span');
+        for (var i = spans.length - 1; i >= 0; i--) unwrap(spans[i]);
+
+        /* A <div> is either a wrapper around real blocks (unwrap it) or a
+           stand-in for a paragraph (promote it to <p>, so the line survives). */
+        var divs = root.querySelectorAll('div');
+        for (var j = divs.length - 1; j >= 0; j--) {
+            var d = divs[j];
+            if (!d.parentNode) continue;
+
+            if (hasBlockChild(d)) { unwrap(d); continue; }
+
+            if (!d.textContent.trim() && !d.querySelector('img, br, hr')) {
+                d.parentNode.removeChild(d);
+                continue;
+            }
+
+            var p = document.createElement('p');
+            while (d.firstChild) p.appendChild(d.firstChild);
+            d.parentNode.replaceChild(p, d);
+        }
+        return root;
+    }
+
     /* Pasted markup is arbitrary web content and we re-render it via innerHTML,
        so drop anything executable before it goes back into the page. */
     function sanitize(root) {
@@ -838,6 +946,8 @@
             var cleaned = cleanText(n.nodeValue, opts, acc);
             if (cleaned !== n.nodeValue) n.nodeValue = cleaned;
         }
+
+        if (opts.tidy) tidyMarkup(container);
 
         var outHtml = container.innerHTML;
         var result = summarize(acc, outHtml);
@@ -898,7 +1008,7 @@
     var elInMeta = $('inMeta'), elOutMeta = $('outMeta');
 
     var optAuto = $('optAuto'), optChanges = $('optChanges'), optUrls = $('optUrls'),
-        optInvisible = $('optInvisible'), optForce = $('optForce');
+        optInvisible = $('optInvisible'), optForce = $('optForce'), optTidy = $('optTidy');
 
     var AUTO_LIMIT = 400000;  // above this, auto-clean waits for the button
     var lastResult = null;
@@ -913,7 +1023,8 @@
         return {
             protectUrls: optUrls.checked,
             stripInvisible: optInvisible.checked,
-            force: optForce.checked
+            force: optForce.checked,
+            tidy: optTidy.checked
         };
     }
 
@@ -1267,7 +1378,7 @@
         if (optChanges.checked) renderChanges(lastResult ? lastResult.changes : []);
     });
 
-    [optUrls, optInvisible, optForce].forEach(function (el) {
+    [optUrls, optInvisible, optForce, optTidy].forEach(function (el) {
         el.addEventListener('change', function () { if (inputText().trim()) run(); });
     });
 

@@ -101,6 +101,52 @@ function cc_norm($s) {
 }
 
 /**
+ * Read a single-character mapping out of a row.
+ *
+ * Accepts the arrow form the CSV uses for its character list:
+ *     а → a        (also ->, -->, =>, ⟶, ⇒)
+ * and a plain two-cell form:
+ *     а <tab> a
+ *
+ * The left side must be exactly one non-ASCII character and the right side
+ * plain ASCII (or empty, meaning "delete"), so a lookalike can only ever be
+ * rewritten to real Latin - never to another Cyrillic character.
+ *
+ * Returns array(from, to) or null when the row is not a character mapping.
+ */
+function cc_parse_char_mapping($cells) {
+    $accept = function ($from, $to) {
+        if (preg_match_all('/./u', $from) !== 1)  return null;   // one character only
+        if (!cc_has_non_ascii($from))             return null;   // must be a lookalike
+        if ($to !== '' && !preg_match('/^[\x20-\x7E]{1,8}$/', $to)) return null; // ASCII target
+        if ($from === $to)                        return null;
+        return array($from, $to);
+    };
+
+    // Arrow form, in whichever cell it happens to sit.
+    foreach ($cells as $cell) {
+        $cell = trim((string)$cell);
+        if ($cell === '') continue;
+        if (preg_match('/^(.)\s*(?:→|⟶|⇒|-->|->|=>)\s*(.{0,8})$/u', $cell, $m)) {
+            $hit = $accept($m[1], trim($m[2]));
+            if ($hit !== null) return $hit;
+        }
+    }
+
+    // Two-cell form: exactly two non-empty cells, one char and its replacement.
+    $nonEmpty = array();
+    foreach ($cells as $cell) {
+        $cell = trim((string)$cell);
+        if ($cell !== '') $nonEmpty[] = $cell;
+    }
+    if (count($nonEmpty) === 2) {
+        return $accept($nonEmpty[0], $nonEmpty[1]);
+    }
+
+    return null;
+}
+
+/**
  * Pick the source (corrupted) and target (correct) columns.
  *
  * Header names are tried first; if that fails we fall back to content analysis -
@@ -245,6 +291,8 @@ if ($srcCol < 0 || $tgtCol < 0 || $srcCol === $tgtCol) {
 }
 
 $map         = array();
+$chars       = array();
+$ignored     = array();
 $skipped     = 0;
 $phraseCount = 0;
 
@@ -252,19 +300,41 @@ foreach ($rows as $r) {
     $from = isset($r[$srcCol]) ? trim((string)$r[$srcCol]) : '';
     $to   = isset($r[$tgtCol]) ? trim((string)$r[$tgtCol]) : '';
 
-    if ($from === '' || $to === '')  { $skipped++; continue; }
-    if ($from === $to)               { $skipped++; continue; }
-    if (!cc_has_non_ascii($from))    { $skipped++; continue; } // nothing to fix
-    if (isset($map[$from])) {
-        if ($map[$from] !== $to) {
-            $warnings[] = 'Duplicate mapping for "' . $from . '" - kept the first one.';
+    /* ---- A complete word mapping (the main table) ---- */
+    if ($from !== '' && $to !== '' && cc_has_non_ascii($from)) {
+        if ($from === $to) { $skipped++; continue; }
+        if (isset($map[$from])) {
+            if ($map[$from] !== $to) {
+                $warnings[] = 'Duplicate mapping for "' . $from . '" - kept the first one.';
+            }
+            $skipped++;
+            continue;
         }
-        $skipped++;
+        if (preg_match('/\s/u', $from)) $phraseCount++;
+        $map[$from] = $to;
         continue;
     }
 
-    if (preg_match('/\s/u', $from)) $phraseCount++;
-    $map[$from] = $to;
+    /* ---- A single-character mapping, e.g. "а → a" ---- */
+    $pair = cc_parse_char_mapping($r);
+    if ($pair !== null) {
+        if (isset($chars[$pair[0]]) && $chars[$pair[0]] !== $pair[1]) {
+            $warnings[] = 'Duplicate character mapping for "' . $pair[0] . '" - kept the first one.';
+            $skipped++;
+        } elseif (isset($chars[$pair[0]])) {
+            $skipped++;
+        } else {
+            $chars[$pair[0]] = $pair[1];
+        }
+        continue;
+    }
+
+    /* ---- Neither: remember it so the tool can say it was not understood ---- */
+    $line = trim(implode(' ', array_map('trim', $r)));
+    if ($line !== '') {
+        if (count($ignored) < 20) $ignored[] = $line;
+        $skipped++;
+    }
 }
 
 $payload = array(
@@ -276,12 +346,15 @@ $payload = array(
         'target' => isset($header[$tgtCol]) ? $header[$tgtCol] : '',
     ),
     'count'       => count($map),
+    'charCount'   => count($chars),
     'phraseCount' => $phraseCount,
     'skipped'     => $skipped,
+    'ignored'     => $ignored,
     'warnings'    => array_values(array_unique($warnings)),
     'generated'   => gmdate('c'),
     'csvModified' => gmdate('c', $stat['mtime']),
     'map'         => $map,
+    'chars'       => empty($chars) ? new stdClass() : $chars,
 );
 
 /* ---- Refresh the JSON cache (best effort - never fatal) ---- */
